@@ -1,0 +1,10 @@
+The plan in .agents/plans/M0-M1.md is approved with these corrections. Implement M0 and M1 now.
+
+Corrections:
+1. Hash chain: hash = sha256 of canonical JSON (sorted keys, no whitespace, UTF-8) of {seq, ts, type, payload_sha256, prev_hash}. payload_sha256 = sha256 of canonical JSON of payload. The first event's prev_hash is 64 zeros. verify_chain() must detect tampering with ANY field (seq, ts, type, payload, prev_hash, hash), plus deleted, reordered or inserted lines. Add a test for each.
+2. Android shell must include a working Gradle wrapper (gradlew + gradle/wrapper) so `cd android && ./gradlew testDebugUnitTest assembleDebug` runs. Use the installed JDK 21 and Android SDK. Kotlin + Compose, package dev.dreamz.mmc, minSdk 26.
+3. Backend: FastAPI app with GET /health so scripts/dev.sh can be smoke-tested. Add a property test (hypothesis library) that random event sequences always verify, and that any single-byte mutation of the JSONL fails verification.
+4. Drop the bogus `import references` from the plan's verification commands.
+5. Do not commit. Do not touch docs/research/.
+
+When done, run every verification command from AGENTS.md (replay_check may be a stub) and fix failures until they pass. Then append a dated entry to docs/DECISIONS.md for any decision you made, and finish with: list of files created, and the exact pass/fail output summary of each verification command.

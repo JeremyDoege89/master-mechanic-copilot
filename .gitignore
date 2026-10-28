@@ -5,3 +5,4 @@ data/
 *.keystore
 *.jks
 local.properties
+.agents/runs/*.log
