@@ -1,0 +1,14 @@
+The plan in .agents/plans/M2.md is approved with these corrections. Implement all of M2 now.
+
+Corrections:
+1. Kotlin package is dev.dreamz.mmc (not com.mmc): put sources in android/app/src/main/java/dev/dreamz/mmc/{elm,adapter,session}/ and tests under the matching test path. Update the repo-layout paths in AGENTS.md to dev/dreamz/mmc/ so the docs match.
+2. Set minSdk 29 in android/app/build.gradle, as AGENTS.md says (the 26 from M0 was a mistake).
+3. Replace the "AT TP A0" grep with a unit test that scans driver command strings; the blocked literal may legitimately appear in Allowlist.kt as a blocked entry, so the test must check the commands the driver actually sends, not the source text.
+4. The .mmrec bundle format must be readable by the Python backend too: add backend/mmc/replay/mmrec.py (load + verify manifest hashes) with a pytest, and make scripts/replay_check.sh really verify bundles with it instead of being a stub. Commit nothing; I will commit.
+5. Turn the plan's python one-liner into a real pytest that validates every emitted adapter_profile fixture against packages/schemas/adapter_profile.json (have the Kotlin tests write the emitted profiles into backend/tests/fixtures/adapter_profiles/).
+
+Work through the plan's order. Run tests after each step and keep them green. At the end run:
+  cd android && ./gradlew testDebugUnitTest assembleDebug
+  cd backend && uv run pytest -q
+  scripts/replay_check.sh backend/tests/fixtures/sessions/*.mmrec
+and fix failures until all pass. Add a dated docs/DECISIONS.md entry for decisions you made. Finish with: files created/changed, test counts, and the pass/fail summary of each command.
