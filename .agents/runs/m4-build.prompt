@@ -1,0 +1,14 @@
+The plan in .agents/plans/M4.md is approved with these corrections. Implement all of M4 now.
+
+1. End-to-end test must be planner-driven, like the M3 scenario tests: after streaming the scenario's OBD observations, repeatedly take the top runnable test from GET /state (not a hard-coded test id), answer it from the scenario fixture via the result route, until the stop rule fires or 4 tests. Parametrize over all 7 sim scenarios (L1, tools=[]); each final report must name the true hypothesis #1 with p >= 0.8 and validate against packages/schemas/report.json. Also test that WS pushes equal GET state after every event, and that a WS client that reconnects mid-session gets the current state.
+2. VIN, per AGENTS.md: store it encrypted at rest (key from a new MMC_VIN_KEY env var; add it to .env.example with no value, and generate a dev key automatically into DATA_DIR if unset), index by sha256, and only ever display or log the last 6 characters. Test that no full VIN appears in the event log file, server logs or the report JSON.
+3. Include the blob upload route the Android client uses for .mmrec, written through store/blobs.py, and list it in AGENTS.md API contracts if it isn't there.
+4. docs/SAFETY.md checklist: assume the owner works alone. Vehicle in Park/Neutral with the parking brake set, outdoors only (never in a garage), phone mounted and logging started before any rpm hold, never touch the phone while holding rpm, no hands near belts or fans, abort conditions as planned. Include the M2 real-vehicle acceptance items (VIN, DTCs and at least 10 PIDs logged to a .mmrec bundle over Classic) and how to copy the .mmrec off the phone (adb pull path) into backend/tests/fixtures/sessions/.
+5. Android: debug build must point at the backend over Tailscale by default; take the host from a gradle property MMC_BACKEND_URL with a sensible default, editable in the settings screen. Keep Sim selectable so the full flow runs on the phone with no car.
+6. Do not commit.
+
+Order as planned; keep tests green after each step. At the end run:
+  cd backend && uv run pytest -q
+  cd android && ./gradlew testDebugUnitTest assembleDebug
+  scripts/replay_check.sh backend/tests/fixtures/sessions/*.mmrec
+and fix failures until all pass. Add a dated docs/DECISIONS.md entry. Finish with files created/changed, test counts, the per-scenario e2e results, and the pass/fail of each command.

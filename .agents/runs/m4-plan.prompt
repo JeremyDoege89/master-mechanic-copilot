@@ -1,0 +1,10 @@
+Read AGENTS.md (M4 GATE, API contracts, schemas, "Do NOT"), docs/SPEC.md (core flows, key screens, architecture) and docs/PLAN.md Day 2. M0–M3 are done and committed: backend event store, .mmrec, engine/ and kp/; Android ELM driver, simulator, transports and Recorder.
+
+Write an implementation plan for M4 to .agents/plans/M4.md: Android live → backend → state over WebSocket → next-test card → JSON report. Cover:
+- Backend FastAPI routes exactly as AGENTS.md "API contracts" defines them (sessions, append-only events, state, next test, test results, report JSON), each writing to the event store, and the WebSocket that pushes engine state after every event.
+- Android: a minimal Compose flow (choose transport incl. Sim → connect → live PIDs/DTCs → next-test card → record outcome → report) plus the client that streams OBD Observations and evidence to the backend. Recording to .mmrec continues on-device.
+- The backend URL is configurable (default http://<dev-host>:8000 over Tailscale; the phone reaches dreamz-code over Tailscale).
+- An automated end-to-end test that needs no phone: drive the backend with a simulator scenario over HTTP+WS (pytest with TestClient) and assert the final report names the true hypothesis.
+- What the owner does on the Ford tomorrow for the manual gate check, as a short checklist added to docs/SAFETY.md (read-only, key on, engine idling outdoors).
+
+No LLM calls yet (Observations come from OBD parsing only). Map each acceptance item to a test, list files, order and exact verification commands. Under 150 lines. Write only the plan file. End with a 5-line summary and any ambiguities you resolved.
