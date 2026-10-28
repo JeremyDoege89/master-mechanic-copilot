@@ -9,23 +9,31 @@ android {
     compileSdk 35
     buildToolsVersion '35.0.0'
 
+    def mmcBackendUrl = findProperty("MMC_BACKEND_URL") ?: "http://100.64.0.1:8000"
     defaultConfig {
         applicationId 'dev.dreamz.mmc'
         minSdk 29
         targetSdk 35
         versionCode 1
         versionName '0.1.0'
+        // Debug default: backend over Tailscale; editable on-device in Settings.
+        buildConfigField "String", "DEFAULT_BACKEND_URL", "\"$mmcBackendUrl\""
     }
 
     buildTypes {
-        debug {}
+        debug {
+            // Dev backend is plain http over Tailscale.
+            manifestPlaceholders = [usesCleartext: "true"]
+        }
         release {
             minifyEnabled false
+            manifestPlaceholders = [usesCleartext: "false"]
         }
     }
 
     buildFeatures {
         compose true
+        buildConfig true
     }
 
     compileOptions {
@@ -43,5 +51,6 @@ dependencies {
     implementation 'androidx.activity:activity-compose:1.9.3'
     implementation 'androidx.compose.ui:ui'
     implementation 'androidx.compose.material3:material3'
+    implementation 'com.squareup.okhttp3:okhttp:4.12.0'
     testImplementation 'junit:junit:4.13.2'
 }

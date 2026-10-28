@@ -37,6 +37,38 @@ class RecorderTest {
     }
 
     @Test
+    fun test_records_while_streaming() {
+        // Interleaved record + stream, as the Live screen does: the .mmrec
+        // keeps growing while rows are still being appended.
+        val rec = Recorder()
+        val file = java.io.File.createTempFile("recorder-streaming", ".mmrec")
+        try {
+            for (i in 1..20) {
+                rec.recordTx("010C")
+                rec.recordRx("7E8 04 41 0C 1A F8\r\r>")
+                if (i % 5 == 0) {
+                    rec.writeMmrec(
+                        file,
+                        metaJson = """{"format":"mmrec/1","rows":$i}""",
+                    )
+                    val text = Recorder.readMember(file, "transcript.jsonl")
+                        .toString(Charsets.UTF_8)
+                    val rows = text.lines().filter { it.isNotBlank() }
+                    assertEquals(2 * i, rows.size)
+                }
+            }
+            val text = Recorder.readMember(file, "transcript.jsonl").toString(Charsets.UTF_8)
+            assertTrue(text.contains("\"dir\":\"tx\""))
+            assertTrue(text.contains("\"dir\":\"rx\""))
+            val manifest = Recorder.readMember(file, "manifest.json").toString(Charsets.UTF_8)
+            assertTrue(manifest.contains(Recorder.sha256(
+                Recorder.readMember(file, "transcript.jsonl"))))
+        } finally {
+            file.delete()
+        }
+    }
+
+    @Test
     fun replayTransportRefeedReproducesTranscript() {
         val rec = Recorder()
         val script = listOf(

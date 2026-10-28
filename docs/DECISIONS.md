@@ -2,6 +2,45 @@
 
 Newest first. Each entry: date, decision, why. Add one whenever scope, a dependency or an architecture choice changes.
 
+## 2026-10-28 — M4 gate: sessions API + WS + report, VIN encryption, Android backend URL
+
+- Backend sessions API (`backend/mmc/api/routes.py`, registry in
+  `backend/mmc/sessions.py`): `POST /sessions`, `POST .../events`,
+  `GET .../state`, `POST .../tests/{ref}/result`, `POST .../blobs`
+  (multipart, written through `store/blobs.py` — the route AGENTS.md already
+  listed), `POST .../report`, `GET /reports/{id}.json`, `WS .../ws` pushing
+  full state after every appended event. Derived state (posteriors, rankings,
+  traces) is recomputed from the event log on every read, never stored.
+  Safety acks ride the existing append-only events route (`safety_ack`), so no
+  extra route was needed; the result route also enforces the gate (409 until
+  acked) and refuses already-performed tests.
+- VIN: full VIN stored only as `enc:v1:...` (XOR-SHA256 stream + HMAC tag,
+  stdlib-only, in `backend/mmc/vin.py`), indexed by sha256 in
+  `DATA_DIR/vin_index.json`, last 6 shown/logged. Key from new `MMC_VIN_KEY`
+  env (added to `.env.example`, empty); when unset a dev key is generated once
+  into `DATA_DIR/vin.key` (0600). The stream cipher is dev-grade — replace
+  with AES-GCM (`cryptography`) before production. Schema `vehicle.json`
+  `vin_last4` became `vin_last6` per the approved correction.
+- New runtime deps: `python-multipart` (blob upload), `jsonschema` +
+  `referencing` moved from dev to runtime (payload/report validation);
+  `wsproto` added to dev (TestClient websockets). Installed with
+  `UV_CACHE_DIR=/tmp/uv-cache uv pip install` because `~/.cache/uv` is
+  read-only in this sandbox.
+- Android: `SessionClient.kt` (OkHttp — new dep `com.squareup.okhttp3:okhttp:4.12.0`;
+  no coroutines, blocking calls on background threads) with HTTP routes, blob
+  upload, and a state WebSocket; minimal Compose gate flow
+  (Settings → Transport → Live → Next-test → Record → Report). Debug backend
+  URL defaults from gradle property `MMC_BACKEND_URL` (Tailscale address of
+  the dev host; placeholder `http://100.64.0.1:8000` — the owner sets the real
+  IP once via `tailscale ip -4`, or `-PMMC_BACKEND_URL=...`, or on-device in
+  Settings, which persists). Sim stays selectable and is the default, so the
+  full flow runs with no car. `Recorder` is wrapped at the transport layer so
+  the .mmrec transcript is the exact exchange.
+- `docs/SAFETY.md` created for the solo owner: Park/Neutral + parking brake,
+  outdoors only, phone mounted and logging before any rpm hold, never touch
+  the phone while holding rpm, abort list, plus the M2 bundle acceptance and
+  the `adb pull` path into `backend/tests/fixtures/sessions/`.
+
 ## 2026-10-28 — Android builds run on the build machine, not in GitHub CI
 
 GitHub CI keeps the backend (pytest + replay check) and web build jobs. The Android job is dropped: installing the
