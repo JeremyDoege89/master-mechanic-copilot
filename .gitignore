@@ -6,3 +6,14 @@ data/
 *.jks
 local.properties
 .agents/runs/*.log
+# build outputs / envs (never commit)
+__pycache__/
+.pytest_cache/
+.hypothesis/
+backend/.venv/
+backend/uv.lock
+node_modules/
+web/dist/
+android/.gradle/
+android/app/build/
+*.index.sqlite

@@ -1,0 +1,25 @@
+[project]
+name = "mmc"
+version = "0.1.0"
+description = "Master Mechanic Copilot backend"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.115",
+  "uvicorn>=0.30",
+]
+readme = "README.md"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+  "pytest>=8",
+  "jsonschema>=4",
+  "hypothesis>=6",
+  "httpx>=0.27",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,0 +1,1 @@
+{"conditions":{"ect_c":95.0,"load_pct":22.0,"rpm":750.0},"confidence":0.95,"evidence_ids":["ev_001"],"extractor":"physics.trim_rpm_split","feature":"stft_b1_idle","observation_id":"obs_001","ts":"2026-10-28T12:05:01+00:00","units":"percent","value":18.2}

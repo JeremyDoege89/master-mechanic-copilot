@@ -1,0 +1,1 @@
+{"created_ts":"2026-10-28T12:00:00+00:00","engine_version":"0.1.0","kp_version":"ford-gen-v1","mode":"live","model_pins":{"asr":"muse-voice-transcribe-1.0","sam":"sam-3.1","spark":"muse-spark-1.3","wonder":"muse-wonder-1.0"},"session_id":"sess_001","tools":["multimeter"],"user_level":"L1","vehicle":{"make":"Ford","model":"Focus","year":2012}}

@@ -1,0 +1,1 @@
+{"evaluator":"physics.trim_rpm_split","evidence_ids":["ev_001"],"expected":{"max":10.0,"min":-10.0,"outcome":"normal","source":{"kind":"physics","ref":"physics.trim_rpm_split"},"units":"percent"},"measured":{"conditions":{"ect_c":95.0,"rpm":750.0},"units":"percent","value":18.2},"outcome":"lean_idle_normal_cruise","result_id":"res_001","test_id":"t_001"}
