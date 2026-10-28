@@ -2,6 +2,12 @@
 
 Newest first. Each entry: date, decision, why. Add one whenever scope, a dependency or an architecture choice changes.
 
+## 2026-10-28 — Android builds run on the build machine, not in GitHub CI
+
+GitHub CI keeps the backend (pytest + replay check) and web build jobs. The Android job is dropped: installing the
+SDK on GitHub runners broke, and every Android build and test, and the release APK, runs on dreamz-code anyway.
+`cd android && ./gradlew testDebugUnitTest assembleDebug` stays a required local check before each commit.
+
 ## 2026-10-28 — M3 reasoning engine decisions
 
 - Engine layout is `backend/mmc/engine/` (`physics`, `bayes`, `evaluator`,
