@@ -13,7 +13,7 @@ A master mechanic in your pocket that shows its work: live OBD + camera + voice 
 engine that ranks the next best test and produces a hash-chained, replayable report. Muse Spark reasons and sees,
 SAM 3.1 finds parts, Voice Transcribe keeps hands free, and Muse Code built it.
 
-## Where we are (Oct 28 AM)
+## Where we are (Oct 28 PM)
 
 | Item | State |
 |---|---|
@@ -26,7 +26,8 @@ SAM 3.1 finds parts, Voice Transcribe keeps hands free, and Muse Code built it.
 | Repo | Public on GitHub (`JeremyDoege89/master-mechanic-copilot`) |
 | `.env` | Created from `.env.example` without the key (the key comes from `~/.config/meta/model-api.env` via your shell) |
 | Phone (moto g, adb over Tailscale) | Connected Oct 28 |
-| Code | None yet. All code is written during the event by Muse Code. |
+| Code | Written by Muse Code, driven headlessly (`.agents/muse-run.sh`; plans in `.agents/plans/`). **M0, M1, M2 (sim), M3 done.** **M4 built**: phone → backend → WebSocket → next-test card → report works on the moto g with the simulator; the Ford check is the remaining gate item. |
+| CI | GitHub runs backend tests + replay check + web build; Android builds and tests run on dreamz-code (see DECISIONS) |
 
 We are two days behind the research schedule: its D1 (setup) and D2 (event store + ELM driver) haven't happened.
 We're making that up with three all-nighters, not with cuts. **Full scope stays in.**
