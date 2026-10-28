@@ -1,0 +1,10 @@
+Read AGENTS.md (M5 milestone, "Meta client rules", env vars, "Do NOT"), docs/SPEC.md §7 (vision and upload pipeline: live mode, cost, latency, upload mode) and §4 Meta model usage map, docs/PLAN.md Days 1-3, and the existing backend (M0-M4 done). The Meta API key is available to processes as MODEL_API_KEY via ~/.config/meta/model-api.env (never print it, never write it to a file in the repo). `meta-smoke` already confirmed a text call to muse-spark-1.3 works.
+
+Write .agents/plans/M5.md covering, in this order:
+1. A spike first: backend/mmc/meta/ client (per "Meta client rules": budget guard against BUDGET_USD_HARD_STOP that refuses calls past the limit, per-call cost logging to the event store, retries, response caching keyed by request hash so REPLAY_USE_CACHED_LLM replays cost nothing), then one Spark image call and one SAM 3.1 call on a test engine-bay photo. Confirm the exact request/response shapes against the live API and record them in docs/DECISIONS.md. Use a CC0/public-domain engine-bay photo downloaded to backend/tests/fixtures/images/ with its source and licence noted, or a synthetic image if downloading isn't possible.
+2. M5 proper: keyframe selector, Spark component/anomaly JSON (schema-validated; Spark output becomes typed Observations through the engine, never probabilities), SAM image masks and video tracking, instrument (multimeter) reading with a confirm step, the vision endpoints in AGENTS.md API contracts, and the Android CameraX capture screen feeding them.
+3. Tests that run without network (recorded API responses as fixtures) plus a small opt-in live test marked so CI skips it.
+
+The M5 acceptance set (10 engine-bay + 10 multimeter photos of the owner's Fords) will come from the owner later; plan an evaluation script that scores it once the photos are dropped into backend/tests/fixtures/m5_eval/.
+
+List files, order, a test per acceptance item, expected Meta spend for development, and exact verification commands. Under 160 lines. Write only the plan file. End with a 5-line summary and any ambiguities resolved.
