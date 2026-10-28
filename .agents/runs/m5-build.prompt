@@ -1,0 +1,9 @@
+The plan in .agents/plans/M5.md is approved. Implement it now, spike first.
+
+Spike rules:
+- Write the spike as a runnable script, scripts/spike_meta_vision.py, that uses backend/mmc/meta/ and saves the raw (key-free) responses as fixtures under backend/tests/fixtures/vision/.
+- Try to run it. If your sandbox cannot reach api.meta.ai or MODEL_API_KEY is not set in your environment, do NOT fake the responses: build everything else against clearly-labelled provisional fixtures shaped from the docs, mark them PROVISIONAL in a README next to them, and say so in your final summary. I will run the spike outside the sandbox and you will reconcile afterwards.
+- Cost logging must use the usage numbers the API returns, not only estimates.
+- Never print or store the key; make sure no request headers end up in fixtures or the event log.
+
+Then the rest of M5 in the plan's order. Keep all existing tests green. At the end run the plan's verification commands except the live test and eval (no owner photos yet), fix failures until they pass, add a dated docs/DECISIONS.md entry, and do not commit. Finish with: files created/changed, whether the live spike ran (and its spend), test counts, and pass/fail of each command.
