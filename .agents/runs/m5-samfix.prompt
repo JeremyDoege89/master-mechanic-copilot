@@ -1,0 +1,12 @@
+Correction from a live run (my earlier note was wrong): SAM 3.1 rejects a bare [input_text, input_image] list with
+`400 input[0] did not match any supported type`. The accepted shape wraps the parts in one user message:
+  input=[{"role": "user", "content": [{"type": "input_text", "text": "<concept or object prompt>"},
+                                      {"type": "input_image", "image_url": "data:image/jpeg;base64,..."}]}]
+(`{"type": "message", "role": "user", "content": [...]}` also works). Verified live just now: concept "battery" on
+engine_bay_02.jpg streams `<0f>0<|box;x1=963;y1=690;x2=1130;y2=830;w=1280;h=960|><|mask;...|>`.
+
+Fix backend/mmc/meta/sam.py (image path, and make the video path at ~line 421 use the same user-message wrapper with
+its file/video part), update the docstrings and the docs/DECISIONS.md M5-reconciled entry, and add a unit test that
+asserts the request `input` is a single user message containing input_text then input_image. Keep the captured stream
+fixtures as they are. Run cd backend && uv run pytest -q (or .venv python) until green. Do not commit. Finish with
+files changed and the test count.

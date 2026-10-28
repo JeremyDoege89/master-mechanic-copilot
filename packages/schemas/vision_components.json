@@ -1,0 +1,73 @@
+{
+  "$id": "vision_components",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Muse Spark scene-understanding output for one engine-bay keyframe: named components (each with a short SAM-ready concept noun plus an optional shorter fallback) and visible anomalies with region hints.",
+  "properties": {
+    "anomalies": {
+      "items": {
+        "properties": {
+          "confidence": {
+            "maximum": 1,
+            "minimum": 0,
+            "type": "number"
+          },
+          "region_hint": {
+            "description": "Where in the frame to look, e.g. 'upper left near the battery'. Free text; a box/point prompt may be derived from it.",
+            "type": "string"
+          },
+          "type": {
+            "enum": [
+              "belt_glazing",
+              "corrosion",
+              "cracked_hose",
+              "frayed_wire",
+              "leak"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "confidence",
+          "type"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "components": {
+      "items": {
+        "properties": {
+          "confidence": {
+            "maximum": 1,
+            "minimum": 0,
+            "type": "number"
+          },
+          "name": {
+            "description": "Human-readable part name, e.g. 'battery negative terminal'.",
+            "type": "string"
+          },
+          "sam_concept": {
+            "description": "ONE short common noun for one SAM 3.1 request, 1-2 words (e.g. 'battery', 'air filter', 'radiator cap'). Never a comma list; longer phrases segment badly.",
+            "type": "string"
+          },
+          "sam_fallback": {
+            "description": "Optional even-shorter everyday name, used only when sam_concept finds nothing (one retry).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "confidence",
+          "name",
+          "sam_concept"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "anomalies",
+    "components"
+  ],
+  "type": "object"
+}

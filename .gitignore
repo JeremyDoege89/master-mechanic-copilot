@@ -18,3 +18,6 @@ android/.gradle/
 android/app/build/
 *.index.sqlite
 android/.kotlin/
+# M5 owner eval photos (keep the README, ignore the drops)
+backend/tests/fixtures/m5_eval/*
+!backend/tests/fixtures/m5_eval/README.md

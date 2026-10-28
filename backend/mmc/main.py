@@ -3,9 +3,11 @@
 from fastapi import FastAPI
 
 from mmc.api.routes import router
+from mmc.api.routes_vision import router as vision_router
 
 app = FastAPI(title="Master Mechanic Copilot")
 app.include_router(router)
+app.include_router(vision_router)
 
 
 @app.get("/health")

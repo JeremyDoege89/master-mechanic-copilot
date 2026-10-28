@@ -27,6 +27,7 @@ SAM 3.1 finds parts, Voice Transcribe keeps hands free, and Muse Code built it.
 | `.env` | Created from `.env.example` without the key (the key comes from `~/.config/meta/model-api.env` via your shell) |
 | Phone (moto g, adb over Tailscale) | Connected Oct 28 |
 | Code | Written by Muse Code, driven headlessly (`.agents/muse-run.sh`; plans in `.agents/plans/`). **M0, M1, M2 (sim), M3 done.** **M4 built**: phone → backend → WebSocket → next-test card → report works on the moto g with the simulator; the Ford check is the remaining gate item. |
+| Model routing | Checked Oct 28 against `GET /v1/models`. **Product:** Spark 1.3 for reasoning, vision, instrument reading and PDF/video extraction; SAM 3.1 for masks and tracking; Voice Transcribe for hands-free; Wonder once per report for review; Muse Image kept out of diagnosis. **Muse Code:** `*-plan` and `*-review` jobs run on `muse-wonder-1.0`, builds and fixes on `muse-spark-1.3` (high), set in `.agents/muse-run.sh`. Standard IDs only, never `-contributor`. |
 | CI | GitHub runs backend tests + replay check + web build; Android builds and tests run on dreamz-code (see DECISIONS) |
 
 We are two days behind the research schedule: its D1 (setup) and D2 (event store + ELM driver) haven't happened.
@@ -43,6 +44,11 @@ upload, voice hands-free, Muse Wonder report review, L1–L3 UX, web Replay + Re
 - **Fallback order, only if a day's exit criteria are missed** (not planned cuts): Mode 22 → Wi-Fi → BLE → Wonder →
   voice → SAM video → PDF upload. Never cut: simulator, replay, event log + hash chain, report, explanation trace,
   safety gates, allowlist.
+
+- **Sponsor credits (Oct 28): Modal and Baseten.** Modal hosts the backend + web Replay/Report for judging (compute only,
+  no rules question). Baseten serves a Meta **open-weight** model as a text-only fallback (narration and explanations,
+  never probabilities) when the Meta API budget guard trips or the API is down. It's a stretch after M7, and only Meta
+  open weights, so every AI call stays a Meta model.
 
 ## Sleep and safety rules for the push
 
@@ -89,7 +95,9 @@ Later:
 
 7. [ ] Thu Oct 29: car time for the baseline recording (Ford #1, phone paired to the ELM327).
 8. [ ] Sat Oct 31: planted-fault recording session, 2 vehicles, daylight.
-9. [ ] Sun Nov 1: pick and pay for the cloud host for the judging period.
+9. [ ] Sun Nov 1: cloud host for the judging period is **Modal** (sponsor credits you were awarded). Before then, put the
+       Modal token in place: `uv tool install modal && modal token set --token-id <id> --token-secret <secret>`.
+       Baseten key (also awarded): save to `~/.config/baseten/api.env` as `BASETEN_API_KEY=...` (chmod 600).
 10. [ ] Mon Nov 2: demo footage (driveway, CEL on, voice-over).
 11. [ ] Wed Nov 4: fill in the submission form (Indie track; themes "Build for Your World" + "Push the Frontier").
 

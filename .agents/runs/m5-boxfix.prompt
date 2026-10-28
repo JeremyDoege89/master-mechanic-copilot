@@ -1,0 +1,10 @@
+Second live correction for backend/mmc/meta/sam.py. Concept-only calls now work live. Box/point calls fail with
+`400 invalid prompt: object prompts cannot be combined with a phrase`: segment_image currently sends
+f"{concept} {object_prompt_text(...)}". Verified live: sending the object-prompt text ALONE as input_text works, e.g.
+`<0f>0<|box;x1=963;y1=690;x2=1130;y2=830;w=1280;h=960|>` returns a box + mask for that object.
+
+Change segment_image (and track_video if it does the same) so a box/point prompt sends only the object-prompt text;
+keep `concept` in the request record and SamResult as the label for the overlay. Add a unit test asserting the
+input_text has no phrase when box/point is given, and one that a concept-only call sends just the phrase. Update the
+DECISIONS M5-reconciled entry. Run the backend tests (.venv/bin/python -m pytest -q) until green. Do not commit.
+Finish with files changed and the test count.

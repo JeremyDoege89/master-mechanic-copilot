@@ -1,0 +1,16 @@
+engine_bay_01.jpg — SYNTHETIC labelled engine-bay diagram generated locally
+with PIL (no download available when created). NOT a real vehicle photo:
+shapes/positions are placeholders so the spike and offline tests have a
+~1024px JPEG to send. Replace with a CC0/public-domain engine-bay photo
+(record URL, author, licence here) before running eval_m5.py for real.
+
+engine_bay_02.jpg — REAL photo: "Toyota Pickup N100 Engine Bay 3VZE"
+by Roach350, CC0, https://commons.wikimedia.org/wiki/File:Toyota_Pickup_N100_Engine_Bay_3VZE.jpg
+(Wikimedia 1280px thumbnail).
+
+engine_bay_02.jpg is now the DEFAULT for the spike
+(scripts/spike_meta_vision.py), the live test
+(backend/tests/test_vision_live.py) and eval (scripts/eval_m5.py):
+the synthetic engine_bay_01.jpg is useless for SAM (it found nothing).
+Keep engine_bay_01.jpg only where a synthetic image is genuinely what a
+test needs (offline Spark-shape tests that never call SAM).

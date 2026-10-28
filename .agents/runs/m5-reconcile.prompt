@@ -1,0 +1,16 @@
+I ran the spike outside your sandbox. Reconcile M5 with the real API and fix the Android build. Do not commit.
+
+Facts from the live runs:
+- The synthetic engine_bay_01.jpg is useless for SAM (it found nothing). A real CC0 photo is now at backend/tests/fixtures/images/engine_bay_02.jpg (source in SOURCE.txt). Use it in the spike, the live test and the fixtures; keep engine_bay_01 only where a synthetic image is genuinely what a test needs.
+- SAM 3.1 is called through the Responses API with stream=True and the input [input_text "<concept>", input_image data URL] (no other wrapper). It does NOT return JSON. It streams output_text in its own grammar, e.g. `<0f>0<|box;x1=963;y1=690;x2=1130;y2=830;w=1280;h=960|><|mask;x=0;y=0;data=141,168,...|>`. Two real captured event streams are in backend/tests/fixtures/vision/: sam_stream_battery.jsonl (one object found) and sam_stream_air_filter_housing.jsonl (nothing found: empty text, status completed, usage.images_processed=1).
+- Meta's official parser meta-sam-parser 0.1.0 is now a backend dependency (installed in backend/.venv; read its source there). Use parse_responses_stream(...) with image_segmentation_format() / video_segmentation_format(), decode_mask_to_rle / decode_mask_to_svg_path for overlays, and build_object_prompt for box/point prompts, instead of your own parser. Rewrite backend/mmc/meta/sam.py around it, replay the captured streams in tests, and delete the provisional SAM fixture.
+- Empty SAM result is a normal outcome ("not found"), not an error. Longer phrases like "air filter housing" found nothing while "battery" worked, so make Spark's prompt return a short, common sam_concept noun (1-2 words, e.g. "battery", "air filter", "radiator cap") per component, and on an empty SAM result retry once with a shorter fallback concept if Spark gave one.
+- SAM usage has no tokens, only images_processed; cost logging must use that.
+- instrument_01.json stays PROVISIONAL until the owner supplies multimeter photos; keep it clearly labelled.
+
+Android: CameraX is pinned to 1.4.2 in app/build.gradle (1.5+ needs AGP 8.9 and compileSdk 36; keep 1.4.2). The 1.4.2 artifacts are now in ~/.gradle caches, so you can build offline by seeding your GRADLE_USER_HOME from them. Current compile errors:
+  CameraScreen.kt:161:14 Function 'internal' exposes its 'private-in-file' return type 'Gray'.
+  ClipRecorder.kt:51:38 Unresolved reference 'lower'.
+Fix them and anything after them until `./gradlew testDebugUnitTest assembleDebug` passes.
+
+At the end run: cd backend && uv run pytest -q (or .venv python), the Android build, and scripts/replay_check.sh. Update scripts/spike_meta_vision.py so I can rerun it live, update the docs/DECISIONS.md M5 entry with the real SAM shapes, and finish with files changed, test counts and pass/fail of each command.

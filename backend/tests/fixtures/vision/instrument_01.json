@@ -1,0 +1,31 @@
+{
+  "PROVISIONAL": true,
+  "cached": false,
+  "cost_usd": 0.00355,
+  "kind": "llm_call",
+  "model": "muse-spark-1.3",
+  "output_text": "{\"confidence\": 0.94, \"display_text\": \"12.42\", \"units\": \"V\", \"value\": 12.42}",
+  "request": {
+    "image": {
+      "_bytes_len": 0,
+      "image_url": "data:image/jpeg;base64,... placeholder; owner meter photo pending",
+      "type": "input_image"
+    },
+    "input": [
+      {
+        "content": "meter prompt (see mmc/meta/spark.py INSTRUMENT_SYSTEM)",
+        "role": "system"
+      },
+      {
+        "content": "What does this display read?",
+        "role": "user"
+      }
+    ],
+    "op": "spark.instrument.v1"
+  },
+  "request_sha256": "PROVISIONAL",
+  "usage": {
+    "input_tokens": 2500,
+    "output_tokens": 100
+  }
+}

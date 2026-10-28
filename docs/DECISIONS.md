@@ -2,6 +2,143 @@
 
 Newest first. Each entry: date, decision, why. Add one whenever scope, a dependency or an architecture choice changes.
 
+## 2026-10-28 — M5 reconciled with the live SAM API + Android builds offline
+
+1. Real SAM 3.1 shape (two captured streams in
+   `backend/tests/fixtures/vision/sam_stream_*.jsonl`, real CC0 photo
+   `backend/tests/fixtures/images/engine_bay_02.jpg`, corrected by a live
+   run 2026-10-28 — concept "battery" on `engine_bay_02.jpg`): Responses
+   API with `stream=True` and `input` as ONE user message wrapping the
+   parts, `[{"role": "user", "content": [{"type": "input_text",
+   "text": "<concept>"}, {"type": "input_image",
+   "image_url": "data:<mime>;base64,..."}]}]`. A bare
+   `[input_text, input_image]` list is REJECTED with
+   `400 input[0] did not match any supported type` (the earlier note
+   claiming no wrapper was wrong). Video wraps the same way with an
+   `input_file` part for the clip. SAM does NOT return JSON — it
+   streams `output_text` grammar `<0f>0<|box;x1=..;y1=..;x2=..;y2=..;w=..;h=..|><|mask;x=0;y=0;data=<w>,<h>,<payload>|>`
+   (inclusive pixel box edges; one line per frame: `<Nf>`). Usage carries
+   no tokens, only `images_processed=1` per image call ($0.0025 at
+   $2.50/1k); `budget.actual_cost_from_usage` now reads that key for SAM
+   models and the client falls back to the pre-call estimate only when the
+   stream carries no counts.
+2. `backend/mmc/meta/sam.py` rewritten around the official
+   `meta-sam-parser 0.1.0` (new runtime dep, already in pyproject):
+   `parse_responses_stream(...)` with `image_segmentation_format()` /
+   `video_segmentation_format()` over the raw event list (driven via
+   `asyncio` from sync code), `decode_mask_to_rle` /
+   `decode_mask_to_svg_path` for overlay masks, `build_object_prompt` for
+   box/point prompts (pixel-space, inclusive edges in, half-open out).
+   New `MetaClient.call_stream` accumulates text (deltas, else done-text)
+   + terminal usage, caches the full event list for $0 replays, and keeps
+   the 429/budget/key-free-record semantics of `call`. The provisional
+   `sam_mask_01.json` fixture is deleted; tests replay the captured
+   streams. Hand-rolled `parse_sam_response`/`normalize_box`/`SamParseError`
+   are gone.
+3. Empty completed stream is a NORMAL "not found", never an error
+   (`SamResult.found == False`). Live evidence: "battery" found 3 objects
+   while "air filter housing" found nothing on the same photo. Spark's
+   prompt now demands a 1-2-word common `sam_concept` ("battery",
+   "air filter", "radiator cap") plus an optional even-shorter
+   `sam_fallback` (new optional schema field, old fixtures still valid);
+   `segment_with_fallback` retries ONCE with the fallback, and the
+   keyframe route uses it (overlay records now carry `used_concept` +
+   `found` + SVG-path masks). `instrument_01.json` stays PROVISIONAL until
+   owner meter photos land.
+4. `engine_bay_02.jpg` is now the default in the spike
+   (`scripts/spike_meta_vision.py`: Spark -> concept+fallback SAM ->
+   box-prompt SAM from the first found box, records saved per attempt),
+   the live test (`test_vision_live.py`: direct "battery" assert plus the
+   Spark-concept fallback path) and eval (`eval_m5.py --offline` replays
+   both captured streams, $0). The synthetic `engine_bay_01.jpg` stays
+   only where a synthetic image is what a test needs.
+5. Android: CameraX stays pinned to 1.4.2 (1.5+ needs AGP 8.9 +
+   compileSdk 36). Builds run offline with `GRADLE_USER_HOME=/tmp/gradle-home`
+   (seeded copy of `~/.gradle`: wrapper + 8.10.2 + modules-2 +
+   transforms-4 + build-cache; `~/.gradle` itself is not writable in the
+   sandbox). Two compile fixes: `Gray` is now `internal` (it was
+   `private` while `internal downsampleGray` returned it) and
+   `extension.lower()` -> `extension.lowercase()` (removed in Kotlin 2.0).
+   `./gradlew testDebugUnitTest assembleDebug --offline`: BUILD SUCCESSFUL,
+   68 unit tests, 0 failures, fresh `app-debug.apk`.
+6. Second live correction the same day: concept-only calls work, but a
+   box/point call sending `"<concept> <object-prompt>"` fails with
+   `400 invalid prompt: object prompts cannot be combined with a phrase`.
+   Verified live: the object-prompt text ALONE as input_text works (e.g.
+   `<0f>0<|box;x1=963;y1=690;x2=1130;y2=830;w=1280;h=960|>` returns a box
+   + mask). `segment_image` and `track_video` now send only the
+   object-prompt text when a box/point prompt is given; the concept(s)
+   stay in the request record and label the `SamResult` for the overlay.
+   Covered by `test_segment_image_object_prompt_sends_no_phrase`
+   (box + point), `test_segment_image_concept_only_sends_just_phrase`
+   and `test_track_video_box_prompts_send_only_object_prompt`.
+
+## 2026-10-28 — M5 Vision (spike-first; live spike NOT run — provisional fixtures)
+
+1. Live spike (`scripts/spike_meta_vision.py`: Spark scene JSON + SAM concept
+   mask + SAM box-prompt mask through `backend/mmc/meta/`, key-free records
+   to `backend/tests/fixtures/vision/`, spend from returned `usage`) ran
+   PARTIALLY from the sandbox on a borrowed SDK: one Spark call on the
+   synthetic engine-bay photo succeeded 2026-10-28 ~19:32 UTC and its record
+   is now `spark_components_01.json` (LIVE, not provisional). Verified Spark
+   shapes: `response.output_text` carries the JSON directly; `usage` carries
+   `input_tokens_details.cached_tokens` (0) and
+   `output_tokens_details.reasoning_tokens` (1428 of 1499 output tokens —
+   billed as output, already covered by the ledger math); the model returned
+   2 components (air filter housing 0.95, coolant reservoir 0.93), no
+   anomalies, passing the schema + no-probability gates unchanged. Spend for
+   that call: $0.00779825 from returned usage. The follow-up SAM call hung
+   >30 min on a socket blackhole, so `sam_mask_01.json` and
+   `instrument_01.json` stay hand-shaped PROVISIONAL; owner re-runs the spike
+   outside the sandbox for those and reconciles `mmc/meta/sam.py` (box/point
+   grammar, masks/boxes/detections shapes) then. Lesson applied the same day:
+   `MetaClient` takes `timeout_s` (default 120 s) into the OpenAI client
+   instead of SDK-default timeouts; unit-tested with a stubbed SDK module.
+2. New dependency `openai>=1.0` (pyproject): required by AGENTS.md "Use the
+   OpenAI Python SDK". The SDK is imported lazily in `meta/client.py`, so the
+   backend and all tests stay importable/runnable offline; only a real
+   network call needs it. No other new dependencies (vision math + keyframes
+   are stdlib-only; Android CameraX below).
+3. Structured output = prompt-constrained JSON + server-side JSON Schema
+   validation (`vision_components` / `vision_instrument`, new in
+   `packages/schemas/` + examples), not Responses `text.format`, so the code
+   does not depend on unverified SDK-version behaviour; validation happens
+   before use per AGENTS.md hard constraint 4.
+4. `MetaClient` (one Responses shell): env-pinned Standard IDs defaulting to
+   muse-spark-1.3 / sam-3.1 / muse-wonder-1.0 / muse-voice-transcribe-1.0,
+   contributor IDs refused; 429 retry (exp backoff+jitter, Retry-After);
+   budget pre-check + ledger from returned `usage` (SAM per-image/frame falls
+   back to the estimate since its usage carries no tokens); disk cache by
+   sha256(canonical request), REPLAY_USE_CACHED_LLM=true replays for $0 and
+   raises on a miss. `call_record()` strips headers/keys — unit-tested, and
+   the spike refuses to write fixtures containing credential markers.
+5. SAM grammar assumptions to verify in the spike: one concept per request
+   (comma lists rejected client-side), box/point prompts in a 0-1000 space,
+   `parse_sam_response` accepts masks/boxes/detections shapes and raises
+   `SamParseError` naming seen keys otherwise; video via Files API
+   `purpose="user_data"`, MP4/MOV only (extension + ftyp brand check,
+   transcode stays on-device), max 3 tracked objects.
+6. Vision routes: keyframe appends evidence_added + observation_added (engine
+   posteriors provably untouched — compute_state folds only test_result);
+   `components.py` rejects any probability-named key anywhere in LLM output;
+   instrument value becomes Evidence ONLY via the confirm route (retake when
+   confidence < 0.8, confirm refuses retake readings).
+7. Android: CameraX 1.6.2 (core/camera2/lifecycle/video/view — present in the
+   local artifact cache) for CameraScreen (15 fps ImageAnalysis,
+   Laplacian-variance + motion gate, <=1 keyframe/3 s + tap, auto torch,
+   ~1024 px upload) and ClipRecorder (5-10 s MP4 H.264 for SAM); pure
+   `KeyframeSelector` mirrors `vision/keyframes.py` exactly and is unit-tested
+   on both sides. Sandbox could NOT run gradle (no network; camera-video
+   transitive binaries absent machine-wide): KeyframeSelector.kt +
+   KeyframeSelectorTest.kt were compiled with the cached Kotlin 2.0.21
+   compiler and all 10 tests pass; full `./gradlew testDebugUnitTest
+   assembleDebug` must run with network (owner). CameraScreen/ClipRecorder
+   compile-review only.
+8. `scripts/eval_m5.py`: live mode needs owner photos + labels (INCOMPLETE
+   until they land); `--offline` scores recorded fixtures through the real
+   parse gates ($0). `backend/tests/fixtures/m5_eval/` is gitignored except
+   its README.
+
 ## 2026-10-28 — M4 phone-test fixes (protocol framing, auto-measure, evidence gate, scenario picker, session restore)
 
 1. Protocol label (`Parsers.cleanAtResponse`, used by `Fingerprint` for ATDPN

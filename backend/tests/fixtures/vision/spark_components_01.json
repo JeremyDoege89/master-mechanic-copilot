@@ -1,0 +1,37 @@
+{
+  "cached": false,
+  "cost_usd": 0.012992499999999999,
+  "kind": "llm_call",
+  "model": "muse-spark-1.3",
+  "output_text": "{\"components\": [{\"name\": \"battery\", \"sam_concept\": \"battery\", \"confidence\": 0.96}, {\"name\": \"fuse box\", \"sam_concept\": \"fuse box\", \"confidence\": 0.85}, {\"name\": \"radiator\", \"sam_concept\": \"radiator\", \"confidence\": 0.92}, {\"name\": \"radiator cap\", \"sam_concept\": \"radiator cap\", \"sam_fallback\": \"cap\", \"confidence\": 0.9}, {\"name\": \"cooling fan shroud\", \"sam_concept\": \"fan shroud\", \"sam_fallback\": \"shroud\", \"confidence\": 0.88}, {\"name\": \"engine\", \"sam_concept\": \"engine\", \"sam_fallback\": \"motor\", \"confidence\": 0.94}, {\"name\": \"air filter housing\", \"sam_concept\": \"air filter\", \"sam_fallback\": \"filter\", \"confidence\": 0.86}, {\"name\": \"air intake hose\", \"sam_concept\": \"intake hose\", \"sam_fallback\": \"hose\", \"confidence\": 0.88}, {\"name\": \"brake fluid reservoir\", \"sam_concept\": \"brake reservoir\", \"sam_fallback\": \"reservoir\", \"confidence\": 0.89}, {\"name\": \"brake booster\", \"sam_concept\": \"brake booster\", \"sam_fallback\": \"booster\", \"confidence\": 0.82}, {\"name\": \"coolant overflow tank\", \"sam_concept\": \"overflow tank\", \"sam_fallback\": \"tank\", \"confidence\": 0.88}, {\"name\": \"hood\", \"sam_concept\": \"hood\", \"confidence\": 0.95}, {\"name\": \"oil filler cap\", \"sam_concept\": \"oil cap\", \"sam_fallback\": \"cap\", \"confidence\": 0.75}, {\"name\": \"power steering reservoir\", \"sam_concept\": \"steering reservoir\", \"sam_fallback\": \"reservoir\", \"confidence\": 0.72}], \"anomalies\": [{\"type\": \"corrosion\", \"region_hint\": \"front radiator top tank\", \"confidence\": 0.78}, {\"type\": \"corrosion\", \"region_hint\": \"front left battery hold-down bracket\", \"confidence\": 0.65}]}",
+  "request": {
+    "image": {
+      "_bytes_len": 397959,
+      "image_url": "data:image/jpeg;base64,/9j/4gIcSUNDX1BST0ZJTEUAAQEAAAIM...<397959 bytes>",
+      "type": "input_image"
+    },
+    "input": [
+      {
+        "content": "You are the vision front-end of a vehicle-diagnosis copilot. Describe only what you see in this engine-bay photo. Reply with JSON only, exactly: {\"components\": [{\"name\": str, \"sam_concept\": str, \"sam_fallback\": str (optional), \"confidence\": 0-1}], \"anomalies\": [{\"type\": one of leak|corrosion|frayed_wire|belt_glazing|cracked_hose, \"region_hint\": str, \"confidence\": 0-1}]}. Each sam_concept is ONE short common noun for a segmentation model, 1-2 words (e.g. \"battery\", \"air filter\", \"radiator cap\"); longer phrases segment badly, so never a comma list and never 3+ words. When the part has an even shorter everyday name, also give it as sam_fallback (used only if the first concept finds nothing). Never output probabilities, priors, posteriors or diagnoses.",
+        "role": "system"
+      },
+      {
+        "content": "Vehicle context: Ford gasoline vehicle, engine bay photo\nList the visible under-hood components and any visible anomalies.",
+        "role": "user"
+      }
+    ],
+    "op": "spark.components.v1"
+  },
+  "request_sha256": "8a1cf9b59bf8b551175d162a757db41b38569f05bebd47ddc1f83ea2d5992706",
+  "usage": {
+    "input_tokens": 1762,
+    "input_tokens_details": {
+      "cached_tokens": 1635
+    },
+    "output_tokens": 2962,
+    "output_tokens_details": {
+      "reasoning_tokens": 2457
+    },
+    "total_tokens": 4724
+  }
+}
