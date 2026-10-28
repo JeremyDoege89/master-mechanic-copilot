@@ -2,6 +2,31 @@
 
 Newest first. Each entry: date, decision, why. Add one whenever scope, a dependency or an architecture choice changes.
 
+## 2026-10-28 — M3 reasoning engine decisions
+
+- Engine layout is `backend/mmc/engine/` (`physics`, `bayes`, `evaluator`,
+  `planner`, `stoprule`, `trace`) plus `backend/mmc/kp/` (`loader`,
+  `packs/ford_gen_v1.yaml`, `packs/generic_gas_v1.yaml`). Only `engine/`
+  changes posteriors; the LLM never sets probabilities (AGENTS.md rule 4).
+- New runtime dependency `pyyaml` (KP packs are YAML); `hypothesis` was
+  already in the dev group and is used for engine property tests.
+- Likelihood sanity is a loader hard gate: any cell outside [0.02, 0.95]
+  raises, so no single test is a silver bullet; rows must sum to 1 ± 1e-9.
+  Hypotheses missing from a test's table get a uniform-over-outcomes row.
+- Scenario tests never script test order: each loop step runs the planner's
+  top-ranked runnable test with the outcome from `sim_scenarios.py`. Both
+  profiles (L1/OBD-only, L3/full tools) converge to the true hypothesis with
+  p ≥ 0.8 within ≤ 4 tests on all 7 scenarios — no xfail was needed. Tuning
+  went into the pack (stronger "normal" contrasts for healthy vs
+  charging/O2/other), never into planner overrides.
+- Sim parity: `SimSnapshotTest.kt` writes warm-idle/2500-rpm + ECT-series
+  snapshots to `backend/tests/fixtures/sim_snapshots/`; `test_sim_parity.py`
+  requires `sim_scenarios.py` to reproduce them within 1e-6.
+- Stop rule implements SPEC §5 as coded (P(top) ≥ 0.85 and best EIG <
+  0.05 bits); scenario tests assert the looser M3 bar (p ≥ 0.8) per plan.
+- Also fixed: `.agents/plans/M3.md` Summary repeated the §6 verification
+  commands; §6 is now the single canonical copy.
+
 ## 2026-10-28 — M2 implementation decisions
 
 - `Transport.transact` is blocking `(line, timeoutMs) -> String`, not the SPEC's

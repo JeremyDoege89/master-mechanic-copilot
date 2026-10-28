@@ -1,0 +1,114 @@
+# generic-gas-v1: slim fallback pack for non-Ford gasoline vehicles (M3).
+# Same hypothesis vocabulary as ford-gen-v1, flatter priors, core OBD tests only.
+version: generic-gas-v1
+
+hypotheses:
+  vacuum_leak_post_maf: {prior: 0.12, label: {L1: "Air leak after the airflow sensor", L3: "Unmetered air leak post-MAF"}}
+  maf_contaminated: {prior: 0.10, label: {L1: "Dirty airflow sensor", L3: "MAF sensor contaminated (under-reporting)"}}
+  maf_circuit_open: {prior: 0.05, label: {L1: "Airflow sensor unplugged or its wire broken", L3: "MAF circuit open (P0102 class)"}}
+  iat_circuit_open: {prior: 0.04, label: {L1: "Temperature sensor wire broken", L3: "IAT circuit open (P0113 class)"}}
+  fuel_delivery_low: {prior: 0.09, label: {L1: "Engine is not getting fuel", L3: "Fuel delivery insufficient (pump / fuse / pressure)"}}
+  thermostat_stuck_open: {prior: 0.06, label: {L1: "Engine never warms up properly", L3: "Thermostat stuck open (P0128 class)"}}
+  ignition_misfire_cyl: {prior: 0.09, label: {L1: "One cylinder is misfiring", L3: "Single-cylinder ignition misfire (P030n class)"}}
+  charging_low: {prior: 0.05, label: {L1: "Battery or charging problem", L3: "Charging system undervoltage"}}
+  o2_slow_b1s1: {prior: 0.05, label: {L1: "Oxygen sensor reacting slowly", L3: "Upstream O2 sensor slow/lazy (bank 1 sensor 1)"}}
+  healthy: {prior: 0.15, label: {L1: "No fault found", L3: "No fault (healthy vehicle)"}}
+  other: {prior: 0.10, label: {L1: "Something else we have not pinned down", L3: "Other / unmodeled fault (leak node)"}}
+
+tests:
+  dtc_read:
+    kind: obd_read
+    min_level: L1
+    tools: []
+    minutes: 1
+    risk: 0
+    safety_gate: none
+    outcomes: [p0102, p0113, p0128, p030n, none, other_codes]
+    evaluator: rule.dtc_match
+    likelihoods:
+      vacuum_leak_post_maf: {p0102: 0.05, p0113: 0.05, p0128: 0.05, p030n: 0.05, none: 0.70, other_codes: 0.10}
+      maf_contaminated: {p0102: 0.10, p0113: 0.05, p0128: 0.05, p030n: 0.05, none: 0.60, other_codes: 0.15}
+      maf_circuit_open: {p0102: 0.90, p0113: 0.02, p0128: 0.02, p030n: 0.02, none: 0.02, other_codes: 0.02}
+      iat_circuit_open: {p0102: 0.02, p0113: 0.90, p0128: 0.02, p030n: 0.02, none: 0.02, other_codes: 0.02}
+      fuel_delivery_low: {p0102: 0.04, p0113: 0.04, p0128: 0.04, p030n: 0.04, none: 0.72, other_codes: 0.12}
+      thermostat_stuck_open: {p0102: 0.02, p0113: 0.02, p0128: 0.90, p030n: 0.02, none: 0.02, other_codes: 0.02}
+      ignition_misfire_cyl: {p0102: 0.02, p0113: 0.02, p0128: 0.02, p030n: 0.90, none: 0.02, other_codes: 0.02}
+      charging_low: {p0102: 0.05, p0113: 0.05, p0128: 0.05, p030n: 0.05, none: 0.60, other_codes: 0.20}
+      o2_slow_b1s1: {p0102: 0.05, p0113: 0.05, p0128: 0.05, p030n: 0.05, none: 0.55, other_codes: 0.25}
+      healthy: {p0102: 0.03, p0113: 0.03, p0128: 0.03, p030n: 0.03, none: 0.80, other_codes: 0.08}
+      other: {p0102: 0.05, p0113: 0.05, p0128: 0.05, p030n: 0.05, none: 0.50, other_codes: 0.30}
+
+  trim_idle_vs_2500:
+    kind: obd_procedure
+    min_level: L1
+    tools: []
+    minutes: 2
+    risk: 0
+    safety_gate: engine_running_outdoors
+    outcomes: [lean_idle_normal_cruise, lean_both, normal, rich]
+    evaluator: physics.trim_rpm_split
+    likelihoods:
+      vacuum_leak_post_maf: {lean_idle_normal_cruise: 0.75, lean_both: 0.15, normal: 0.08, rich: 0.02}
+      maf_contaminated: {lean_idle_normal_cruise: 0.15, lean_both: 0.65, normal: 0.15, rich: 0.05}
+      fuel_delivery_low: {lean_idle_normal_cruise: 0.10, lean_both: 0.70, normal: 0.15, rich: 0.05}
+      healthy: {lean_idle_normal_cruise: 0.05, lean_both: 0.05, normal: 0.85, rich: 0.05}
+      other: {lean_idle_normal_cruise: 0.20, lean_both: 0.20, normal: 0.50, rich: 0.10}
+
+  maf_pid_plausibility:
+    kind: obd_calc
+    min_level: L1
+    tools: []
+    minutes: 2
+    risk: 0
+    safety_gate: engine_running_outdoors
+    outcomes: [reads_zero, under_reports, plausible, over_reports]
+    evaluator: physics.maf_expected
+    likelihoods:
+      maf_circuit_open: {reads_zero: 0.90, under_reports: 0.04, plausible: 0.04, over_reports: 0.02}
+      maf_contaminated: {reads_zero: 0.05, under_reports: 0.70, plausible: 0.20, over_reports: 0.05}
+      healthy: {reads_zero: 0.02, under_reports: 0.08, plausible: 0.85, over_reports: 0.05}
+      other: {reads_zero: 0.15, under_reports: 0.20, plausible: 0.50, over_reports: 0.15}
+
+  visual_intake_boot:
+    kind: visual
+    min_level: L1
+    tools: []
+    minutes: 3
+    risk: 0
+    safety_gate: engine_off
+    outcomes: [cracked_disconnected, looks_ok, inconclusive]
+    evaluator: visual.direct
+    likelihoods:
+      vacuum_leak_post_maf: {cracked_disconnected: 0.65, looks_ok: 0.25, inconclusive: 0.10}
+      healthy: {cracked_disconnected: 0.05, looks_ok: 0.85, inconclusive: 0.10}
+      other: {cracked_disconnected: 0.10, looks_ok: 0.60, inconclusive: 0.30}
+
+  listen_fuel_pump_prime:
+    kind: sensory
+    min_level: L1
+    tools: []
+    minutes: 1
+    risk: 0
+    safety_gate: none
+    outcomes: [no_prime_no_start, primes_normally, weak_prime]
+    evaluator: sensory.direct
+    likelihoods:
+      fuel_delivery_low: {no_prime_no_start: 0.85, primes_normally: 0.10, weak_prime: 0.05}
+      healthy: {no_prime_no_start: 0.02, primes_normally: 0.90, weak_prime: 0.08}
+      other: {no_prime_no_start: 0.10, primes_normally: 0.70, weak_prime: 0.20}
+
+  ect_warmup_curve:
+    kind: obd_procedure
+    min_level: L1
+    tools: []
+    minutes: 15
+    risk: 0
+    safety_gate: engine_running_outdoors
+    outcomes: [plateau_low, plateau_normal, inconclusive]
+    evaluator: physics.ect_plateau
+    likelihoods:
+      thermostat_stuck_open: {plateau_low: 0.85, plateau_normal: 0.10, inconclusive: 0.05}
+      healthy: {plateau_low: 0.02, plateau_normal: 0.88, inconclusive: 0.10}
+      other: {plateau_low: 0.10, plateau_normal: 0.60, inconclusive: 0.30}
+
+dependency_groups: [[stft_b1, ltft_b1]]
