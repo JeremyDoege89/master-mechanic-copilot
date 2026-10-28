@@ -29,14 +29,27 @@ SAM 3.1 finds parts, Voice Transcribe keeps hands free, and Muse Code built it.
 | Code | None yet. All code is written during the event by Muse Code. |
 
 We are two days behind the research schedule: its D1 (setup) and D2 (event store + ELM driver) haven't happened.
-The schedule below absorbs that by cutting scope up front instead of hoping to catch up.
+We're making that up with three all-nighters, not with cuts. **Full scope stays in.**
 
-## Scope changes from the slip (decided now, not at the gate)
+## Scope
 
-- **Cut before starting:** Mode 22 Ford DIDs, BLE and Wi-Fi transports (Classic RFCOMM + Sim + Replay only).
-- **Stretch only (build if ahead on Sun Nov 1):** Muse Wonder report review, SAM *video* tracking (single-image SAM
-  stays), PDF manual upload.
-- **Never cut:** simulator, replay, event log + hash chain, report, explanation trace, safety gates, allowlist.
+Everything in `AGENTS.md` and `docs/SPEC.md` ships: all four transports (Classic, BLE, Wi-Fi, Sim + Replay), Mode 22
+read-only Ford DIDs, camera + SAM single-image *and* video tracking, instrument reading, PDF manual and scan-tool
+upload, voice hands-free, Muse Wonder report review, L1–L3 UX, web Replay + Report, judge mode.
+
+- **Mode 22 needs a genuine ELM327 or OBDLink adapter.** If the adapter on hand is a clone, Mode 22 is built and
+  tested against the simulator's GENUINE personality, and the demo shows it there.
+- **Fallback order, only if a day's exit criteria are missed** (not planned cuts): Mode 22 → Wi-Fi → BLE → Wonder →
+  voice → SAM video → PDF upload. Never cut: simulator, replay, event log + hash chain, report, explanation trace,
+  safety gates, allowlist.
+
+## Sleep and safety rules for the push
+
+- **All-nighters: Wed Oct 28, Thu Oct 29, Mon Nov 2.** Sleep: Fri, Sat, Sun and Tue nights.
+- **No planted faults or hands near a running engine on a day after an all-nighter.** Thursday's baseline recording
+  is read-only (plug in, key on, idle outdoors) and is fine. Planted faults are Saturday, after Friday's sleep.
+- **Demo footage is Monday daytime, after Sunday's sleep.** Submission is Wednesday, after Tuesday's sleep.
+- **Before each sleep night, queue a well-specified milestone for Muse** (plan already approved) so it keeps working.
 
 ## Schedule
 
@@ -44,13 +57,13 @@ Milestone numbers match `AGENTS.md`. Its "(D1)", "(D2)"... labels are from the o
 
 | Day | Date | Goals | Exit criteria (by 9 PM CT) |
 |---|---|---|---|
-| **1** | **Wed Oct 28** | **Setup sprint (morning):** owner tasks 1–6 below. Create the public repo from `~/mmc`. Spike one Spark image call + one SAM call on an engine-bay photo. **Then M0 + M1:** scaffold, schemas, `.env.example`, CI; event store with hash chain and blobs. Start M2 sim-only: allowlist, parsers, `Elm327Sim`. | Both API calls work; repo public; `docs/RULES.md` rows confirmed; M0/M1 acceptance green; `ElmAllowlistTest` green |
-| **2** | **Thu Oct 29** | **M2 on the car:** Classic transport, init + fingerprint, VIN/DTCs/PIDs. **Record a baseline `.mmrec` on Ford #1** (healthy, warm idle, 2,500 rpm hold). Benchmark PID rate. **Start M3:** `bayes.py`, `physics.py`, `ford_gen_v1.yaml` (6 fault families). | Phone reads VIN, DTCs and live PIDs from the Ford; baseline bundle saved; Bayes update unit tests pass |
-| **3** | **Fri Oct 30** | **Finish M3:** planner (EIG/cost, filters, stop rule), evaluator, trace, replay determinism test. **M4 GATE:** live Ford → backend → state over WS → next-test card → JSON report. | **GATE.** Sim scenarios converge (true hypothesis #1, p ≥ 0.8 in ≤ 4 tests). If the end-to-end isn't working by 9 PM, also cut voice and all SAM work except a single still-image overlay, and spend Sat on the core. |
-| **4** | **Sat Oct 31** | **Planted-fault recording day** (daylight, driveway, cool engine), using the safety notes in `docs/SPEC.md` §8–9: MAF unplugged, IAT unplugged, unmetered air leak, coil unplugged (≤ 60 s idle) on 2 vehicles. Take engine-bay photos and multimeter photos for M5. **M5 vision** (keyframe selector, Spark component/anomaly JSON, SAM masks, instrument reading) built against those photos. | ≥ 4 `.mmrec` bundles saved, each converging correctly in replay; overlay on a real engine-bay photo |
-| **5** | **Sun Nov 1** | **M6:** L1/L2/L3 styles, tools questionnaire, safety gate checklists, report HTML, web Replay + Report viewer **deployed** on a cloud host (not the home server). Budget guard. Stretch items if ahead. | Public URL replays a real session with zero API spend (`REPLAY_USE_CACHED_LLM=true`); L1 vs L3 instructions differ on the same session |
-| **6** | **Mon Nov 2** | **M7:** voice proxy + "log …"/"next test" commands, judge mode, `docs/JUDGES.md`, polish. **Shoot demo footage** (script in `docs/research/` §9). Signed release APK with simulator mode. **Feature freeze 9 PM.** | All acceptance tests green; footage captured; APK on a GitHub Release |
-| **7** | **Tue Nov 3** | Edit the video to ≤ 2:45. README (what it is, architecture diagram, Meta model map, how to run sim/replay, safety statement, prior-experience statement). Draft submission. Bug fixes only. | Draft submission saved; video uploaded (public link) |
+| **1** | **Wed Oct 28 → all night** | **Setup (morning):** owner tasks 1–6. Spike one Spark image call + one SAM call on an engine-bay photo. **M0 + M1:** scaffold, schemas, CI; event store with hash chain and blobs. **Overnight, M2 complete in the sim:** allowlist, parsers, fingerprinting, `Elm327Sim` (3 personalities, all scenarios), Classic, BLE, Wi-Fi and Replay transports, Mode 22 allowlist. **Start M3:** `bayes.py`, `physics.py`, KP packs. | Both API calls work; repo public; `docs/RULES.md` confirmed; M0/M1/M2-sim acceptance green |
+| **2** | **Thu Oct 29 → all night** | **Daytime, read-only car work:** M2 on Ford #1 over Classic (and BLE/Wi-Fi if you have those adapters). Record the baseline `.mmrec` (healthy, warm idle, 2,500 rpm hold). Benchmark PID rate. Test Mode 22 reads if the adapter is genuine. **Finish M3:** planner, evaluator, trace, stop rule, replay determinism. **M4 GATE pulled forward:** live Ford → backend → WS → next-test card → JSON report. **Overnight, M5 vision:** keyframe selector, Spark component/anomaly JSON, SAM image masks, SAM video tracking, instrument reading. | **GATE by Thu midnight.** Sim scenarios converge (true hypothesis #1, p ≥ 0.8 in ≤ 4 tests); end-to-end works on the Ford |
+| **3** | **Fri Oct 30 → sleep** | **Finish M5** against real engine-bay and multimeter photos. **Upload mode:** PDF manuals (spec extraction with citations), scan-tool PDFs/CSVs, photo/video upload. **Wonder review pass.** Queue M6 groundwork for Muse overnight. | M5 acceptance (≥ 7/10 overlays, 8/10 meter readings); a PDF spec lands as a cited `SpecRange` |
+| **4** | **Sat Oct 31 → sleep** | **Planted-fault recording day** (rested, daylight, driveway, cool engine), using the safety notes in `docs/SPEC.md` §8–9: MAF unplugged, IAT unplugged, unmetered air leak, coil unplugged (≤ 60 s idle), ECT unplugged on 2 vehicles. Capture engine-bay clips for SAM video, plus demo B-roll. **M6 starts:** L1/L2/L3 styles, tools questionnaire, safety gate checklists. | ≥ 5 `.mmrec` bundles saved, each converging correctly in replay |
+| **5** | **Sun Nov 1 → sleep** | **Finish M6:** report HTML/PDF, web Replay + Report viewer **deployed** on a cloud host. Budget guard. **M7:** voice proxy + "log …"/"next test" commands, judge mode, `docs/JUDGES.md`. | Public URL replays a real session with zero API spend; L1 vs L3 differ on the same session; voice "next test" works |
+| **6** | **Mon Nov 2 → all night** | **Daytime: shoot demo footage** (rested; script in `docs/research/` §9). **Overnight:** every acceptance test green, polish, signed release APK with simulator mode, start the video edit. | All acceptance tests green; footage captured; APK on a GitHub Release |
+| **7** | **Tue Nov 3 → sleep** | **Feature freeze at noon.** Finish the video (≤ 2:45). README (architecture diagram, Meta model map, how to run sim/replay, safety statement, prior-experience statement). Draft submission. Bug fixes only. | Draft submission saved; video uploaded (public link) |
 | **8** | **Wed Nov 4** | Buffer. Fresh-browser smoke test of the public URL and a fresh-install test of the APK. Rotate API keys. **Submit by 3 PM CT.** | Submitted |
 
 Reality check for Muse Code: each milestone starts with `/plan`, the plan is saved to `.agents/plans/`, and you
@@ -103,12 +116,16 @@ Later:
 | Risk | Early warning | Response |
 |---|---|---|
 | ELM327 clone misbehaves on the Ford | Init fails or `?` on core commands Thu | Fall back to the limited-clone profile; buy/borrow an OBDLink if needed |
-| Gate slips Fri | No end-to-end by 9 PM Oct 30 | Apply the gate cuts above; Sat becomes core + recording only |
+| Gate slips | No end-to-end by Thu midnight | Fri goes to the core first; take the fallback order only for what's still unbuilt Sun night |
+| Fatigue | Mistakes piling up, or a car task on a no-sleep day | Follow the sleep and safety rules above; let Muse grind while you sleep |
 | API credits run out | Budget guard > $80 by Sun | Replay serves cached outputs only; stop live keyframe analysis in dev |
 | Rules forbid something in the plan | Discord answer on Day 1 | Change the plan the same day and log it in `docs/DECISIONS.md` |
 | Weather on Sat | Rain forecast | Move recording to Fri afternoon or Sun morning |
 
 ## Change log
+
+- **2026-10-28 (later):** Full scope restored at the owner's call: three all-nighters (Wed, Thu, Mon) instead of
+  cuts. The gate moved up to Thu, planted faults stay on rested Saturday, and the old cuts became a fallback order only.
 
 - **2026-10-28:** Plan created from the 2026-10-26 research. Re-baselined to 8 days (setup slipped 2 days); cut
   Mode 22, BLE and Wi-Fi up front; moved Wonder review, SAM video and PDF upload to stretch.
