@@ -106,6 +106,15 @@ class ParsersTest {
     }
 
     @Test
+    fun atdpnFramingStripsCrAndPrompt() {
+        // Golden transcript: raw ATDPN reply with CR framing and '>' prompt.
+        assertEquals("A6", Parsers.cleanAtResponse(transcript("atdpn-framed.txt")))
+        assertEquals("A6", Parsers.cleanAtResponse("A6\r\r>"))
+        assertEquals("ELM327 v1.5", Parsers.cleanAtResponse("ELM327 v1.5\r\r>"))
+        assertEquals("", Parsers.cleanAtResponse("\r\r>"))
+    }
+
+    @Test
     fun pidFormulasSpotCheck() {
         assertEquals(90.0, Pids.decode(0x05, byteArrayOf(0x82.toByte())), 1e-9) // ECT 130-40
         assertEquals(-40.0, Pids.decode(0x0F, byteArrayOf(0x00)), 1e-9) // IAT unplugged

@@ -17,7 +17,9 @@ android {
         versionCode 1
         versionName '0.1.0'
         // Debug default: backend over Tailscale; editable on-device in Settings.
-        buildConfigField "String", "DEFAULT_BACKEND_URL", "\"$mmcBackendUrl\""
+        // A string resource, not a BuildConfig constant: constants get inlined into callers
+        // and a cached compile can keep an old URL.
+        resValue "string", "default_backend_url", mmcBackendUrl
     }
 
     buildTypes {

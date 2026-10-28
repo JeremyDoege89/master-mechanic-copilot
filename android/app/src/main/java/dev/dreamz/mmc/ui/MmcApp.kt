@@ -24,18 +24,23 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import dev.dreamz.mmc.BuildConfig
 import dev.dreamz.mmc.adapter.SimTransport
 import dev.dreamz.mmc.adapter.Transport
 import dev.dreamz.mmc.elm.Elm327Driver
+import dev.dreamz.mmc.elm.Elm327Sim
 import dev.dreamz.mmc.elm.ElmResult
+import dev.dreamz.mmc.elm.ErrorKind
+import dev.dreamz.mmc.elm.NoObdDataException
+import dev.dreamz.mmc.elm.Parsers
 import dev.dreamz.mmc.elm.Pids
+import dev.dreamz.mmc.elm.Scenario
 import dev.dreamz.mmc.session.BackendUrls
 import dev.dreamz.mmc.session.Recorder
 import dev.dreamz.mmc.session.SessionClient
 import dev.dreamz.mmc.session.TransportKind
 import dev.dreamz.mmc.session.TransportOptions
 import okhttp3.WebSocket
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 
@@ -64,6 +69,29 @@ private fun measuredTemplate(testRef: String): String = when (testRef) {
     else -> """{"outcome": ""}"""
 }
 
+/** Human-readable simulator scenario labels for the transport picker. */
+fun scenarioLabel(s: Scenario): String = when (s) {
+    Scenario.HEALTHY -> "Healthy (no fault)"
+    Scenario.MAF_UNPLUGGED -> "MAF unplugged (P0102)"
+    Scenario.IAT_UNPLUGGED -> "IAT unplugged (P0113)"
+    Scenario.VACUUM_LEAK -> "Vacuum leak (lean at idle)"
+    Scenario.FUEL_FUSE_REMOVED -> "Fuel fuse removed (no start)"
+    Scenario.COIL_UNPLUGGED -> "Coil unplugged (P030n misfire)"
+    Scenario.THERMOSTAT_STUCK_OPEN -> "Thermostat stuck open (P0128)"
+}
+
+/** Short description of what the app reads live for each auto-measured test. */
+fun obdTestSummary(ref: String): String = when (ref) {
+    "dtc_read" -> "stored trouble codes (Mode 03)"
+    "maf_pid_plausibility" -> "MAF + RPM (PIDs 10, 0C)"
+    "iat_plausibility" -> "intake-air temperature (PID 0F)"
+    "trim_idle_vs_2500" -> "fuel trims at idle, then at 2,500 rpm"
+    "ect_warmup_curve" -> "coolant temperature samples (PID 05)"
+    "mode06_misfire_counts" -> "Mode 06 misfire counts"
+    "o2_response_check" -> "oxygen sensor samples (PID 14)"
+    else -> "live OBD data"
+}
+
 /** M4 gate-flow controller: settings → transport → live → test → report. */
 class MmcController(context: Context, private val buildDefaultUrl: String) {
     private val appCtx = context.applicationContext
@@ -76,6 +104,7 @@ class MmcController(context: Context, private val buildDefaultUrl: String) {
     var userLevel by mutableStateOf("L1")
     val tools = mutableStateListOf<String>()
     var transportKind by mutableStateOf(TransportOptions.default)
+    var simScenario by mutableStateOf(Scenario.HEALTHY)
     var status by mutableStateOf("")
     var profileText by mutableStateOf("")
     var pidText by mutableStateOf("")
@@ -86,8 +115,37 @@ class MmcController(context: Context, private val buildDefaultUrl: String) {
     var reportJson by mutableStateOf<JSONObject?>(null)
     var blobRef by mutableStateOf("")
 
+    // Test-run flow state (bug 2): OBD auto-measure vs manual outcome form.
+    var activeTestRef by mutableStateOf<String?>(null)
+    var outcomeOptions by mutableStateOf<List<String>>(emptyList())
+    var manualOutcome by mutableStateOf("")
+    var showRawJson by mutableStateOf(false)
+    var measuring by mutableStateOf(false)
+    var measurePrompt by mutableStateOf("")
+    var countdownSec by mutableStateOf(0)
+    var pendingIdleTrim by mutableStateOf<Double?>(null)
+
+    /** Live adapter handle; set on connect/resume, null when not connected. */
+    private var driver: Elm327Driver? = null
+
     val recorder = Recorder()
     private var socket: WebSocket? = null
+
+    companion object {
+        /** Backend test kinds the app measures itself over OBD. */
+        val OBD_KINDS: Set<String> = setOf("obd_read", "obd_calc", "obd_procedure")
+
+        /** Fallback when the state entry carries no kind (offline cache, old backend). */
+        val OBD_FALLBACK: Set<String> = setOf(
+            "dtc_read", "maf_pid_plausibility", "iat_plausibility",
+            "trim_idle_vs_2500", "ect_warmup_curve", "mode06_misfire_counts",
+            "o2_response_check",
+        )
+
+        /** Stop rule mirror of backend/mmc/engine/stoprule.py. */
+        const val STOP_TOP_P = 0.85
+        const val STOP_EIG_BITS = 0.05
+    }
 
     fun resolvedUrl(): String =
         BackendUrls.resolve(prefs.getString(BackendUrls.KEY_BACKEND_URL, null), buildDefaultUrl)
@@ -119,7 +177,9 @@ class MmcController(context: Context, private val buildDefaultUrl: String) {
         status = "Connecting (${transportKind.title})…"
         bg {
             val transport: Transport = when (transportKind) {
-                TransportKind.SIM -> RecordingTransport(SimTransport(), recorder)
+                TransportKind.SIM -> RecordingTransport(
+                    SimTransport(Elm327Sim(scenario = simScenario)), recorder
+                )
                 else -> error("${transportKind.title} pairing lands with the on-vehicle pass; pick Simulator for now.")
             }
             val c = client()
@@ -127,14 +187,15 @@ class MmcController(context: Context, private val buildDefaultUrl: String) {
             val sid = c.createSession(userLevel, tools.toList(), mode)
             main.post { sessionId = sid }
 
-            val driver = Elm327Driver(transport)
-            val profile = driver.init()
+            val d = Elm327Driver(transport)
+            driver = d
+            val profile = d.init()
             main.post { profileText = "${profile.kind} proto=${profile.protocol} multi=${profile.supportsMultiPid}" }
 
             // Live strip: one fast + one slow read, posted as rule observations.
-            val rpm = readPid(driver, 0x0C)
-            val ect = readPid(driver, 0x05)
-            val maf = readPid(driver, 0x10)
+            val rpm = readPid(d, 0x0C)
+            val ect = readPid(d, 0x05)
+            val maf = readPid(d, 0x10)
             main.post { pidText = "rpm=%.0f ect=%.0fC maf=%.2fg/s".format(rpm, ect, maf) }
             var n = 0
             for ((feature, value, units) in listOf(
@@ -162,6 +223,37 @@ class MmcController(context: Context, private val buildDefaultUrl: String) {
         }
     }
 
+    /**
+     * Resume an existing backend session after the activity was recreated
+     * (bug 5): no new session is created. The live driver is rebuilt for the
+     * simulator transport; other transports need a fresh Connect.
+     */
+    fun resumeSession() {
+        val sid = sessionId ?: return
+        status = "Resuming session…"
+        bg {
+            try {
+                if (transportKind == TransportKind.SIM) {
+                    val t = RecordingTransport(
+                        SimTransport(Elm327Sim(scenario = simScenario)), recorder
+                    )
+                    driver = Elm327Driver(t).also { it.init() }
+                } else {
+                    driver = null
+                }
+                val c = client()
+                postState(c.getState(sid))
+                socket?.cancel()
+                socket = c.openStateSocket(sid, ::postState) { err ->
+                    main.post { status = "State socket: $err (reconnects on Connect)" }
+                }
+                main.post { status = "Session resumed." }
+            } catch (e: Exception) {
+                main.post { status = "Resume failed: ${e.message}" }
+            }
+        }
+    }
+
     private fun readPid(driver: Elm327Driver, pid: Int): Double {
         val res = driver.query("01%02X".format(pid))
         val data = (res as? ElmResult.Data)?.ecus?.firstOrNull()?.bytes
@@ -182,20 +274,295 @@ class MmcController(context: Context, private val buildDefaultUrl: String) {
         }
     }
 
+    // -- test classification (bug 2) --------------------------------------
+
+    /** Backend kind for [ref] from the ranked state, or "" when unknown. */
+    fun kindOf(testRef: String): String {
+        val arr = stateJson?.optJSONArray("next_tests") ?: return ""
+        for (i in 0 until arr.length()) {
+            val entry = arr.getJSONObject(i)
+            if (entry.optString("kp_test_ref") == testRef) return entry.optString("kind")
+        }
+        return ""
+    }
+
+    /** True when the app can measure this test itself over OBD. */
+    fun isObdTest(testRef: String): Boolean {
+        val kind = kindOf(testRef)
+        if (kind.isNotEmpty()) return kind in OBD_KINDS
+        return testRef in OBD_FALLBACK
+    }
+
+    /** Discrete outcome choices for a manual test, from its expected outcomes. */
+    fun outcomeOptionsFor(testRef: String): List<String> {
+        val arr = stateJson?.optJSONArray("next_tests") ?: return emptyList()
+        for (i in 0 until arr.length()) {
+            val entry = arr.getJSONObject(i)
+            if (entry.optString("kp_test_ref") == testRef) {
+                val exp = entry.optJSONArray("expected_outcomes") ?: return emptyList()
+                return List(exp.length()) { j -> exp.getJSONObject(j).optString("outcome") }
+            }
+        }
+        return emptyList()
+    }
+
     fun beginTest(testRef: String) {
-        measuredField = measuredTemplate(testRef)
+        activeTestRef = testRef
+        manualOutcome = ""
+        outcomeOptions = outcomeOptionsFor(testRef)
         resultText = ""
+        measuring = false
+        measurePrompt = ""
+        countdownSec = 0
+        pendingIdleTrim = null
+        measuredField = if (showRawJson) measuredTemplate(testRef) else ""
         screen = Screen.TEST
     }
 
-    fun submitResult(testRef: String) {
-        val sid = sessionId ?: return
-        bg {
-            val resp = client().postTestResult(sid, testRef, JSONObject(measuredField))
-            val outcome = resp.getJSONObject("test_result").optString("outcome")
-            main.post { resultText = "Outcome: $outcome" }
-            postState(client().getState(sid))
+    // -- OBD auto-measure (bug 2) ------------------------------------------
+
+    private fun readPidNow(pid: Int): Double {
+        val d = driver ?: error("Connect first — no live adapter.")
+        val res = d.query("01%02X".format(pid))
+        val data = (res as? ElmResult.Data)?.ecus?.firstOrNull()?.bytes
+            ?: throw NoObdDataException("no data for PID ${pid.toString(16)}")
+        return Pids.decode(pid, data.drop(2).toByteArray())
+    }
+
+    private fun readDtcsNow(d: Elm327Driver): List<String> {
+        return when (val r = d.query("03")) {
+            is ElmResult.Data -> {
+                val bytes = r.ecus.firstOrNull()?.bytes ?: return emptyList()
+                if (bytes.size < 3) emptyList()
+                else Parsers.decodeDtcs(bytes.copyOfRange(1, bytes.size))
+            }
+            is ElmResult.TypedError ->
+                if (r.kind == ErrorKind.NO_DATA) emptyList()
+                else throw NoObdDataException("DTC read: ${r.kind}")
         }
+    }
+
+    private fun readTrimTotalNow(): Double = readPidNow(0x06) + readPidNow(0x07)
+
+    /** Build the measured payload for one OBD test from the live connection. */
+    private fun measureOnce(testRef: String): JSONObject {
+        val d = driver ?: error("Connect first — no live adapter.")
+        return when (testRef) {
+            "dtc_read" -> JSONObject().put("dtcs", JSONArray(readDtcsNow(d)))
+            "maf_pid_plausibility" -> {
+                val rpm = readPidNow(0x0C)
+                JSONObject().put("maf_gs", readPidNow(0x10)).put("rpm", rpm).put("disp_l", 2.0)
+            }
+            "iat_plausibility" -> JSONObject().put("iat_c", readPidNow(0x0F))
+            "ect_warmup_curve" -> {
+                // Live samples only: the evaluator judges the plateau from the
+                // tail of the series, so three real readings are sufficient.
+                val series = JSONArray()
+                repeat(3) { i ->
+                    if (i > 0) Thread.sleep(1500)
+                    series.put(readPidNow(0x05))
+                }
+                JSONObject().put("ect_series_c", series)
+            }
+            "mode06_misfire_counts" -> {
+                val entries = d.queryMode06()
+                val misfire = entries.filter { it.mid == 0x0B }.ifEmpty { entries }
+                val counts = JSONObject()
+                for (e in misfire) counts.put(e.tid.toString(), e.value)
+                JSONObject().put("misfire_counts", counts)
+            }
+            "o2_response_check" -> {
+                val samples = JSONArray()
+                repeat(6) { i ->
+                    if (i > 0) Thread.sleep(800)
+                    samples.put(readPidNow(0x14))
+                }
+                JSONObject().put("o2_samples_v", samples)
+            }
+            else -> error("No live measurement for $testRef")
+        }
+    }
+
+    private fun submitMeasuredNow(testRef: String, measured: JSONObject) {
+        val sid = sessionId ?: error("no session")
+        try {
+            val resp = client().postTestResult(sid, testRef, measured)
+            val outcome = resp.getJSONObject("test_result").optString("outcome")
+            main.post {
+                measuredField = measured.toString(2)
+                resultText = "Outcome: $outcome"
+                measuring = false
+                measurePrompt = ""
+                countdownSec = 0
+                pendingIdleTrim = null
+            }
+            postState(client().getState(sid))
+        } catch (e: Exception) {
+            main.post {
+                measuring = false
+                measurePrompt = ""
+                countdownSec = 0
+                status = "Submit failed: ${e.message}"
+            }
+        }
+    }
+
+    /** Single-shot OBD tests: measure live, then submit. */
+    fun measureAndSubmit(testRef: String) {
+        if (testRef == "trim_idle_vs_2500") {
+            captureIdleTrim()
+            return
+        }
+        measuring = true
+        measurePrompt = "Measuring ${obdTestSummary(testRef)}…"
+        bg {
+            try {
+                submitMeasuredNow(testRef, measureOnce(testRef))
+            } catch (e: Exception) {
+                main.post {
+                    measuring = false
+                    measurePrompt = ""
+                    status = "Measure failed: ${e.message}"
+                }
+            }
+        }
+    }
+
+    /** First half of the trim split test: capture idle trims, then prompt. */
+    fun captureIdleTrim() {
+        if (driver == null) {
+            status = "Connect first — no live adapter."
+            return
+        }
+        measuring = true
+        measurePrompt = "Reading idle trims…"
+        bg {
+            try {
+                val idle = readTrimTotalNow()
+                main.post {
+                    pendingIdleTrim = idle
+                    measurePrompt = "Hold 2,500 rpm now"
+                    startCountdown(5) { captureCruiseAndSubmit() }
+                }
+            } catch (e: Exception) {
+                main.post {
+                    measuring = false
+                    measurePrompt = ""
+                    status = "Measure failed: ${e.message}"
+                }
+            }
+        }
+    }
+
+    private fun startCountdown(sec: Int, onDone: () -> Unit) {
+        countdownSec = sec
+        if (sec <= 0) {
+            onDone()
+            return
+        }
+        main.postDelayed({ startCountdown(sec - 1, onDone) }, 1000)
+    }
+
+    /** Second half of the trim split test: capture cruise trims, submit both. */
+    fun captureCruiseAndSubmit() {
+        val idle = pendingIdleTrim
+        val ref = activeTestRef
+        if (idle == null || ref == null) {
+            measuring = false
+            measurePrompt = ""
+            return
+        }
+        measurePrompt = "Reading cruise trims…"
+        bg {
+            try {
+                val cruise = readTrimTotalNow()
+                submitMeasuredNow(
+                    ref,
+                    JSONObject().put("idle_trim_pct", idle).put("cruise_trim_pct", cruise),
+                )
+            } catch (e: Exception) {
+                main.post {
+                    measuring = false
+                    measurePrompt = ""
+                    countdownSec = 0
+                    status = "Measure failed: ${e.message}"
+                }
+            }
+        }
+    }
+
+    /** Manual tests: submit the outcome the user picked from the form. */
+    fun submitManual(testRef: String) {
+        if (manualOutcome.isEmpty()) {
+            status = "Pick the observed outcome first."
+            return
+        }
+        measuring = true
+        bg {
+            try {
+                submitMeasuredNow(testRef, JSONObject().put("outcome", manualOutcome))
+            } catch (e: Exception) {
+                main.post {
+                    measuring = false
+                    status = "Submit failed: ${e.message}"
+                }
+            }
+        }
+    }
+
+    /** Debug path only: submit hand-edited JSON. */
+    fun submitRaw(testRef: String) {
+        measuring = true
+        bg {
+            try {
+                submitMeasuredNow(testRef, JSONObject(measuredField))
+            } catch (e: Exception) {
+                main.post {
+                    measuring = false
+                    status = "Submit failed: ${e.message}"
+                }
+            }
+        }
+    }
+
+    // -- stop-rule wording (bug 3) ------------------------------------------
+
+    /** Client-side mirror of the backend stop rule, from the ranked state. */
+    fun hasConcluded(): Boolean {
+        val s = stateJson ?: return false
+        val hyps = s.optJSONArray("hypotheses") ?: return false
+        if (hyps.length() == 0) return false
+        val top = hyps.getJSONObject(0).optDouble("current", 0.0)
+        val next = s.optJSONArray("next_tests")
+        val best = if (next != null && next.length() > 0) {
+            next.getJSONObject(0).optDouble("eig_bits", Double.NaN)
+        } else null
+        if (best == null || best.isNaN() || best <= 0) return true
+        return top >= STOP_TOP_P && best < STOP_EIG_BITS
+    }
+
+    fun hypothesisHeader(): String =
+        if (hasConcluded()) "Top hypothesis:" else "Not enough evidence yet — current suspects:"
+
+    fun suspectLine(): String {
+        val arr = stateJson?.optJSONArray("hypotheses") ?: return "—"
+        if (arr.length() == 0) return "—"
+        return (0 until minOf(3, arr.length())).joinToString(", ") { i ->
+            val h = arr.getJSONObject(i)
+            "%s p=%.2f".format(h.optString("hypothesis_id"), h.optDouble("current"))
+        }
+    }
+
+    fun topHypothesis(): String {
+        val arr = stateJson?.optJSONArray("hypotheses") ?: return "—"
+        if (arr.length() == 0) return "—"
+        val top = arr.getJSONObject(0)
+        return "%s (p=%.2f)".format(top.optString("hypothesis_id"), top.optDouble("current"))
+    }
+
+    fun rankOneTest(): JSONObject? {
+        val arr = stateJson?.optJSONArray("next_tests") ?: return null
+        return if (arr.length() > 0) arr.getJSONObject(0) else null
     }
 
     fun fetchReport() {
@@ -226,18 +593,6 @@ class MmcController(context: Context, private val buildDefaultUrl: String) {
                 status = "Uploaded .mmrec → $ref"
             }
         }
-    }
-
-    fun topHypothesis(): String {
-        val arr = stateJson?.optJSONArray("hypotheses") ?: return "—"
-        if (arr.length() == 0) return "—"
-        val top = arr.getJSONObject(0)
-        return "%s (p=%.2f)".format(top.optString("hypothesis_id"), top.optDouble("current"))
-    }
-
-    fun rankOneTest(): JSONObject? {
-        val arr = stateJson?.optJSONArray("next_tests") ?: return null
-        return if (arr.length() > 0) arr.getJSONObject(0) else null
     }
 }
 
@@ -302,6 +657,17 @@ private fun TransportScreen(c: MmcController) {
             Text(kind.title, modifier = Modifier.padding(top = 12.dp))
         }
     }
+    if (c.transportKind == TransportKind.SIM) {
+        Text("Simulator scenario (planted fault):")
+        for (s in Scenario.entries) {
+            Row(modifier = Modifier.selectable(
+                selected = c.simScenario == s, onClick = { c.simScenario = s },
+            )) {
+                RadioButton(selected = c.simScenario == s, onClick = { c.simScenario = s })
+                Text(scenarioLabel(s), modifier = Modifier.padding(top = 12.dp))
+            }
+        }
+    }
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         Button(onClick = { c.screen = Screen.SETTINGS }) { Text("← Back") }
         Button(onClick = { c.connect() }) { Text("Connect") }
@@ -316,7 +682,8 @@ private fun LiveScreen(c: MmcController) {
     c.stateJson?.optJSONObject("vehicle")?.optString("vin_last6")?.takeIf { it.isNotEmpty() }?.let {
         Text("Vehicle ····$it")
     }
-    Text("Top hypothesis: ${c.topHypothesis()}")
+    Text(c.hypothesisHeader())
+    Text(if (c.hasConcluded()) c.topHypothesis() else c.suspectLine())
     val next = c.rankOneTest()
     if (next != null) {
         Text("Next test: ${next.optString("kp_test_ref")}")
@@ -337,20 +704,83 @@ private fun LiveScreen(c: MmcController) {
 
 @Composable
 private fun TestScreen(c: MmcController) {
+    val ref = c.activeTestRef
     Text("4 · Record outcome", style = MaterialTheme.typography.titleMedium)
-    Text("Top hypothesis: ${c.topHypothesis()}")
-    OutlinedTextField(
-        value = c.measuredField, onValueChange = { c.measuredField = it },
-        label = { Text("Measured JSON") }, modifier = Modifier.fillMaxWidth(), minLines = 3,
-    )
+    if (ref == null) {
+        Text("No test selected.")
+        Button(onClick = { c.screen = Screen.LIVE }) { Text("← Live") }
+        return
+    }
+    Text("Test: $ref")
+    Text(c.hypothesisHeader())
+    Text(if (c.hasConcluded()) c.topHypothesis() else c.suspectLine())
+    if (c.isObdTest(ref)) {
+        ObdTestBody(c, ref)
+    } else {
+        ManualTestBody(c, ref)
+    }
     if (c.resultText.isNotEmpty()) Text(c.resultText)
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        Button(onClick = { c.screen = Screen.LIVE }) { Text("← Live") }
         Button(onClick = {
-            val ref = c.rankOneTest()?.optString("kp_test_ref") ?: return@Button
-            c.submitResult(ref)
-        }) { Text("Submit") }
+            c.showRawJson = !c.showRawJson
+            if (c.showRawJson && c.measuredField.isEmpty()) c.measuredField = measuredTemplate(ref)
+        }) {
+            Text(if (c.showRawJson) "Hide debug JSON" else "Debug JSON")
+        }
+    }
+    if (c.showRawJson) {
+        OutlinedTextField(
+            value = c.measuredField, onValueChange = { c.measuredField = it },
+            label = { Text("Measured JSON (debug)") }, modifier = Modifier.fillMaxWidth(), minLines = 3,
+        )
+        Button(onClick = { c.submitRaw(ref) }) { Text("Submit raw JSON") }
+    }
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Button(onClick = { c.screen = Screen.LIVE }) { Text("← Live") }
         Button(onClick = { c.fetchReport() }) { Text("Report") }
+    }
+}
+
+@Composable
+private fun ObdTestBody(c: MmcController, ref: String) {
+    if (ref == "trim_idle_vs_2500") {
+        Text("Reads live: ${obdTestSummary(ref)}.")
+        c.pendingIdleTrim?.let { Text("Idle trims: %.1f%%".format(it)) }
+        if (c.countdownSec > 0) {
+            Text("Hold 2,500 rpm now… ${c.countdownSec}s", style = MaterialTheme.typography.titleMedium)
+        }
+        if (c.measurePrompt.isNotEmpty()) Text(c.measurePrompt)
+        Button(onClick = { c.captureIdleTrim() }, enabled = !c.measuring) {
+            Text("Capture idle, then cruise")
+        }
+    } else {
+        Text("Reads live from the adapter: ${obdTestSummary(ref)}.")
+        if (c.measurePrompt.isNotEmpty()) Text(c.measurePrompt)
+        Button(onClick = { c.measureAndSubmit(ref) }, enabled = !c.measuring) {
+            Text(if (c.measuring) "Measuring…" else "Measure & submit")
+        }
+    }
+}
+
+@Composable
+private fun ManualTestBody(c: MmcController, ref: String) {
+    Text("What did you observe?")
+    if (c.outcomeOptions.isEmpty()) {
+        Text("No outcome list for this test — enable Debug JSON to submit manually.")
+    }
+    for (opt in c.outcomeOptions) {
+        Row(modifier = Modifier.selectable(
+            selected = c.manualOutcome == opt, onClick = { c.manualOutcome = opt },
+        )) {
+            RadioButton(selected = c.manualOutcome == opt, onClick = { c.manualOutcome = opt })
+            Text(opt, modifier = Modifier.padding(top = 12.dp))
+        }
+    }
+    Button(
+        onClick = { c.submitManual(ref) },
+        enabled = !c.measuring && c.manualOutcome.isNotEmpty(),
+    ) {
+        Text(if (c.measuring) "Submitting…" else "Submit")
     }
 }
 
@@ -363,6 +793,8 @@ private fun ReportScreen(c: MmcController) {
     } else {
         Text(report.optString("conclusion"))
         val hyps = report.optJSONArray("hypotheses_final")
+        val concluded = !report.optString("conclusion").startsWith("Not enough evidence")
+        Text(if (concluded) "Final ranking:" else "Current suspects:")
         if (hyps != null) {
             for (i in 0 until minOf(3, hyps.length())) {
                 val h = hyps.getJSONObject(i)
@@ -379,4 +811,4 @@ private fun ReportScreen(c: MmcController) {
 
 /** Activity entry: builds the controller with the gradle-pinned default URL. */
 fun controllerFor(context: Context): MmcController =
-    MmcController(context, BuildConfig.DEFAULT_BACKEND_URL)
+    MmcController(context, context.getString(dev.dreamz.mmc.R.string.default_backend_url))

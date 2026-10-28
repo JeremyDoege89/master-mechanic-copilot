@@ -17,7 +17,7 @@ object Fingerprint {
      *   text (already '>'-stripped by the caller convention is fine).
      */
     fun fingerprint(probe: (String) -> String): AdapterProfile {
-        val banner = probe("ATI").replace("?", "").trim()
+        val banner = Parsers.cleanAtResponse(probe("ATI")).replace("?", "").trim()
         val atppsOk = !probe("ATPPS").contains("?")
         val atcraOk = !probe("ATCRA 7E8").contains("?")
         probe("ATS0")
@@ -27,7 +27,7 @@ object Fingerprint {
         // truncate "22F190" and answer "?" (or garbage).
         val echo22 = probe("22F190")
         val echo22Ok = !echo22.contains("?") && echo22.length >= 4
-        val protoRaw = probe("ATDPN").trim()
+        val protoRaw = Parsers.cleanAtResponse(probe("ATDPN"))
         val protocol = PROTOCOL_NAMES[protoRaw.uppercase()] ?: protoRaw
 
         val isObdlink = banner.contains("OBDLink", ignoreCase = true) || banner.contains("STN", ignoreCase = true)

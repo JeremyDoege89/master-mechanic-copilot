@@ -137,6 +137,20 @@ class Elm327SimTest {
     }
 
     @Test
+    fun driverMode06ReadsMisfireCounts() {
+        val driver = driverFor(Personality.GENUINE, Scenario.COIL_UNPLUGGED, misfireCyl = 3)
+        driver.init()
+        val entries = driver.queryMode06()
+        assertEquals(4, entries.size)
+        assertEquals(45, entries.first { it.tid == 3 }.value)
+        assertEquals(0, entries.first { it.tid == 1 }.value)
+
+        val healthy = driverFor(Personality.GENUINE, Scenario.HEALTHY)
+        healthy.init()
+        assertTrue(healthy.queryMode06().all { it.value == 0 })
+    }
+
+    @Test
     fun warmupCurveIsFirstOrderTo95() {
         val sim = Elm327Sim(Personality.GENUINE, Scenario.HEALTHY)
         sim.simTimeSec = 0.0

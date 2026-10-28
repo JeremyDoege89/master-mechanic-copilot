@@ -1,0 +1,13 @@
+M4 is committed. I ran the debug APK on the owner's phone (Sim transport, backend over Tailscale) and the full flow works, but found these bugs. Fix all of them.
+
+1. Protocol label shows raw adapter output: "Adapter: genuine proto=A6\r\r> multi=true". The ATDPN/ATDP response is not being stripped of CR and the '>' prompt. Fix it in the parser/fingerprint layer (not just the UI), check whether the raw string leaks into the emitted adapter_profile fixtures, regenerate them if so, and add a golden-transcript test for ATDPN responses with CR/'>' framing.
+2. "Run test" asks the user to type "Measured JSON" even for tests the app can measure itself over OBD (dtc_read, maf_pid_plausibility, iat_plausibility, trim_idle_vs_2500, ect_warmup_curve, mode06_misfire_counts, and any other KP test whose kind is an OBD read). For those, the app must take the measurement from the live connection (prompting the user only for conditions it needs, e.g. "hold 2,500 rpm now" with a countdown) and submit it. Manual tests (listen_*, visual_*, multimeter) get a simple form built from the test's outcomes, not raw JSON. Remove the raw JSON field from the normal flow (keep it behind a debug toggle).
+3. Report after 0 tests says "Most likely: Air leak ... p=0.17". When the stop rule has not fired, the report and the screen must say there is not enough evidence yet and show the ranked list as "current suspects", not a conclusion. Add a backend test.
+4. Add a simulator scenario picker on the transport screen (all 7 scenarios, default healthy) so the full flow can be demoed on the phone with each planted fault.
+5. Session state is lost when Android recreates the activity (another app came to the foreground and MMC restarted at screen 1). Hold UI/session state in a ViewModel with SavedStateHandle, and on restart resume the existing backend session (session id saved) instead of starting over.
+
+Keep all existing tests green; add tests for 1, 3 and the ViewModel restore logic. Run:
+  cd backend && uv run pytest -q
+  cd android && ./gradlew testDebugUnitTest assembleDebug
+  scripts/replay_check.sh backend/tests/fixtures/sessions/*.mmrec
+and fix failures until all pass. Add a dated docs/DECISIONS.md entry. Do not commit. Finish with files changed, test counts and pass/fail of each command.

@@ -277,6 +277,7 @@ def compute_state(session: Session) -> dict:
         entry = {
             "rank": rec["rank"],
             "kp_test_ref": rec["kp_test_ref"],
+            "kind": pack.tests[rec["kp_test_ref"]].kind,
             "eig_bits": rec["eig_bits"],
             "cost": rec["cost"],
             "score": rec["score"],
@@ -344,10 +345,20 @@ def build_report(session: Session, state: dict) -> dict:
     top = state["hypotheses"][0]
     top_label_l1 = top["label"]["L1"]
     n_tests = len(state["tests_log"])
-    conclusion = (
-        f"Most likely: {top_label_l1} "
-        f"({top['hypothesis_id']}, p={top['current']:.2f} after {n_tests} test(s))."
-    )
+    concluded = should_stop_from_state(state)
+    if concluded:
+        conclusion = (
+            f"Most likely: {top_label_l1} "
+            f"({top['hypothesis_id']}, p={top['current']:.2f} after {n_tests} test(s))."
+        )
+    else:
+        suspects = ", ".join(
+            f"{h['label']['L1']} (p={h['current']:.2f})" for h in state["hypotheses"][:3]
+        )
+        conclusion = (
+            f"Not enough evidence yet — no conclusion after {n_tests} test(s). "
+            f"Current suspects: {suspects}. Run the recommended tests first."
+        )
     evidence_index: list[str] = []
     for entry in state["tests_log"]:
         for eid in entry["evidence_ids"]:
@@ -368,10 +379,14 @@ def build_report(session: Session, state: dict) -> dict:
         "conclusion": conclusion,
         "summary_by_level": {
             "L1": conclusion,
-            "L2": f"{top_label_l1} suspected (p={top['current']:.2f}); "
-            f"{n_tests} test(s) performed.",
-            "L3": f"{top['hypothesis_id']} posterior {top['current']:.3f} "
-            f"({top_label_l1} / {top['label']['L3']}) after {n_tests} test(s).",
+            "L2": (
+                f"{top_label_l1} suspected (p={top['current']:.2f}); "
+                f"{n_tests} test(s) performed."
+            ) if concluded else conclusion,
+            "L3": (
+                f"{top['hypothesis_id']} posterior {top['current']:.3f} "
+                f"({top_label_l1} / {top['label']['L3']}) after {n_tests} test(s)."
+            ) if concluded else conclusion,
         },
         "hypotheses_final": state["hypotheses"],
         "tests": [

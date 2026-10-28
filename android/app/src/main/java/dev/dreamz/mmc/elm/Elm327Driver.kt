@@ -4,6 +4,9 @@ import dev.dreamz.mmc.adapter.Transport
 
 class ElmInitException(message: String) : IllegalStateException(message)
 
+/** The ECU answered with a typed no-data condition (NO DATA, CAN ERROR, …). */
+class NoObdDataException(message: String) : IllegalStateException(message)
+
 /**
  * ELM327 driver (SPEC §6). Blocking single-flight calls; [Transport]
  * applies the per-command [timeoutMs]. Init uses ATSP0, never the
@@ -82,6 +85,42 @@ class Elm327Driver(
         Allowlist.check(service, did, p, allowMode22, mode22Allowlist, token)
         val line = if (service == "22") "22$did" else service
         return Parsers.frame(send(line, TIMEOUT_STEADY_MS))
+    }
+
+    /**
+     * Mode 06 monitor read. The reply arrives as numbered ISO-TP lines
+     * ("0: ...", "1: ...") or PCI frames, which [Parsers.frame] does not
+     * handle, so this reassembles them here. Still gated by [Allowlist].
+     */
+    fun queryMode06(): List<Parsers.Mode06Entry> {
+        val p = profile ?: throw IllegalStateException("init() first")
+        Allowlist.check("06", profile = p)
+        val raw = send("06", TIMEOUT_STEADY_MS)
+        val lines = raw.substringBefore(">").replace("\r", "\n").lines()
+            .map { it.trim() }
+            .filter { it.isNotEmpty() && it != "SEARCHING..." }
+            .map { ln ->
+                val head = ln.substringBefore(" ")
+                if (head.length == 3 && head.all { it.isDigit() || it in 'A'..'F' }) {
+                    ln.substringAfter(" ").trim()
+                } else ln
+            }.filter { it.isNotEmpty() }
+        if (lines.isEmpty()) throw NoObdDataException("empty mode 06 reply")
+        if (lines.none { it.matches(Regex("[0-9A-Fa-f]:.*")) }) {
+            // Single-frame reply: reuse the typed-error mapping.
+            when (val framed = Parsers.frame(raw)) {
+                is ElmResult.TypedError -> throw NoObdDataException(framed.kind.name)
+                is ElmResult.Data -> {
+                    val bytes = framed.ecus.firstOrNull()?.bytes
+                        ?: throw NoObdDataException("empty mode 06 reply")
+                    require(bytes.isNotEmpty() && bytes[0] == 0x46.toByte()) { "not a mode 06 payload" }
+                    return Parsers.parseMode06(bytes.copyOfRange(1, bytes.size))
+                }
+            }
+        }
+        val payload = Parsers.reassembleIsoTp(lines)
+        require(payload.isNotEmpty() && payload[0] == 0x46.toByte()) { "not a mode 06 payload" }
+        return Parsers.parseMode06(payload.copyOfRange(1, payload.size))
     }
 
     /** Multi-PID Mode 01 (up to 6 PIDs) only when the profile allows it. */

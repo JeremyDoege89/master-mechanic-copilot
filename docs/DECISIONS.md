@@ -2,6 +2,47 @@
 
 Newest first. Each entry: date, decision, why. Add one whenever scope, a dependency or an architecture choice changes.
 
+## 2026-10-28 — M4 phone-test fixes (protocol framing, auto-measure, evidence gate, scenario picker, session restore)
+
+1. Protocol label (`Parsers.cleanAtResponse`, used by `Fingerprint` for ATDPN
+   and ATI): the raw `A6\r\r>` reply kept its CR framing and `>` prompt, so
+   the codebook lookup missed and the raw string reached the UI label and
+   would have reached stored profiles. Stripping lives in the
+   parser/fingerprint layer, not the UI. The checked-in
+   `adapter_profiles/*.json` fixtures were already clean (emitted from
+   unframed replies; the emitting test rewrote byte-identical files), so no
+   regeneration was needed. Golden transcript
+   `atdpn-framed.txt` + `ParsersTest.atdpnFramingStripsCrAndPrompt` and
+   `FingerprintTest.framedAtdpnAndBannerDoNotLeakRawFraming` cover it.
+2. Test-run flow: OBD-kind tests (`obd_read`/`obd_calc`/`obd_procedure`,
+   from the new `kind` field on state `next_tests` entries, with a hardcoded
+   fallback set) are measured live over the adapter — DTC/MAF+IAT/trims/ECT
+   samples/Mode 06 (new `Elm327Driver.queryMode06` with ISO-TP reassembly,
+   still allowlist-gated)/O2 samples — and submitted directly; the trim
+   split test captures idle, prompts "Hold 2,500 rpm now" with a 5 s
+   countdown, then captures cruise. Manual kinds (visual/sensory/measurement)
+   get an outcome radio form built from the test's `expected_outcomes`. Raw
+   JSON left the normal flow and sits behind a "Debug JSON" toggle.
+3. Evidence gate: `build_report` checks the stop rule first; before it fires
+   the conclusion reads "Not enough evidence yet — … Current suspects: …"
+   at all three summary levels instead of "Most likely: …". The Live/Test/
+   Report screens mirror it client-side (`hasConcluded`, same 0.85/0.05
+   thresholds) and label the ranked list as current suspects. Covered by
+   `backend/tests/test_report_evidence.py`.
+4. Transport screen has a simulator scenario picker (all 7 `Scenario`
+   values, default HEALTHY) wired into the `Elm327Sim` the Sim transport
+   connects with, so each planted fault is demoable on-device.
+5. Session restore: the controller lives in `MmcViewModel`; `onPause`
+   persists a Context-free `MmcSessionSnapshot` into the `SavedStateHandle`
+   and a fresh process reapplies it and calls `resumeSession` (GET state +
+   reopen WS, rebuild the Sim driver) instead of creating a new session.
+   Restore logic is unit-tested (`MmcViewModelTest`, no Context needed).
+   No new Gradle dependencies: `ViewModel`/`SavedStateHandle`/`by viewModels()`
+   resolve from the existing transitive graph. Sandbox note: `~/.gradle` is
+   read-only here, so verification used `GRADLE_USER_HOME=/tmp/gh` (seeded
+   copy of the dist + caches) with `--offline`; the committed `build.gradle`
+   is unchanged.
+
 ## 2026-10-28 — M4 gate: sessions API + WS + report, VIN encryption, Android backend URL
 
 - Backend sessions API (`backend/mmc/api/routes.py`, registry in

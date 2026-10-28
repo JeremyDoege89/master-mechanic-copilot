@@ -29,6 +29,16 @@ object Parsers {
     )
 
     /**
+     * Strip adapter text framing: cut at the first '>' prompt, drop carriage
+     * returns, and return the first non-blank line. Single-line AT replies
+     * such as ATDPN arrive as "A6\r\r>"; without this the raw framing leaks
+     * into labels and stored profiles.
+     */
+    fun cleanAtResponse(raw: String): String =
+        raw.substringBefore(">").replace("\r", "\n").lines()
+            .map { it.trim() }.firstOrNull { it.isNotEmpty() }.orEmpty()
+
+    /**
      * Parse one raw adapter reply (prompt '>' framing).
      * Strips SEARCHING... lines, maps error strings to [ErrorKind],
      * and splits data lines into per-ECU byte payloads.

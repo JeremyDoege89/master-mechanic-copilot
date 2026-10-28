@@ -58,6 +58,22 @@ class FingerprintTest {
     }
 
     @Test
+    fun framedAtdpnAndBannerDoNotLeakRawFraming() {
+        // Raw adapter framing ("A6\r\r>") must resolve to the protocol name,
+        // never leak CR or '>' into the stored profile.
+        val framed = genuineReplies + mapOf(
+            "ATI" to "ELM327 v1.5\r\r>",
+            "ATDPN" to "A6\r\r>",
+        )
+        val profile = Fingerprint.fingerprint(probeOf(framed))
+        assertEquals("ISO 15765-4 CAN 11/500", profile.protocol)
+        assertEquals("ELM327 v1.5", profile.banner)
+        // Unknown protocol codes stay clean too (no CR or '>' residue).
+        val unknown = genuineReplies + mapOf("ATDPN" to "B1\r\r>")
+        assertEquals("B1", Fingerprint.fingerprint(probeOf(unknown)).protocol)
+    }
+
+    @Test
     fun emittedProfilesAreWrittenForBackendSchemaValidation() {
         val dir = java.io.File("../../backend/tests/fixtures/adapter_profiles")
         dir.mkdirs()
