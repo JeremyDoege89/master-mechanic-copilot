@@ -1,0 +1,14 @@
+The plan in .agents/plans/M3.md is approved with these additions. Implement all of M3 now.
+
+1. Scenario tests must not script the test order: in each loop step the test performed is the planner's top-ranked runnable test, and its outcome comes from the scenario fixture. If the planner picks a test the fixture can't answer, that is a fixture gap to fill, not a reason to override the planner.
+2. Run every scenario for two user profiles: L1 with no tools beyond the OBD adapter, and L3 with a full toolset (multimeter, smoke machine, fuel pressure gauge, vacuum gauge). Both must meet the acceptance criterion. If a scenario genuinely cannot converge for L1 within 4 tests using only L1-safe tests, do NOT loosen the knowledge pack: mark that one case xfail with the reason, and list it in your final summary.
+3. Likelihood sanity: the KP loader rejects any likelihood > 0.95 or < 0.02, so no single test is a silver bullet. Add a test for it.
+4. Sim parity: add a Kotlin unit test that writes each scenario's PID/DTC/Mode 06 snapshot (warm idle and 2500 rpm, plus the ECT warm-up series) to backend/tests/fixtures/sim_snapshots/<scenario>.json, commit-ready, and a pytest asserting backend/tests/fixtures/sim_scenarios.py reproduces those snapshots within 1e-6.
+5. Fix the duplicated lines in the plan's Summary section.
+6. Do not commit.
+
+Work in the plan's order and keep tests green after each step. At the end run:
+  cd backend && uv run pytest -q
+  cd android && ./gradlew testDebugUnitTest
+  scripts/replay_check.sh backend/tests/fixtures/sessions/*.mmrec
+and fix failures until all pass. Add a dated docs/DECISIONS.md entry. Finish with: files created/changed, per-scenario results table (scenario × L1/L3: tests used, final top hypothesis and p), test counts, and the pass/fail of each command.
