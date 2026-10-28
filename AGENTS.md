@@ -40,7 +40,7 @@ mmc/
       replay/ bundle.py runner.py
     tests/ (pytest)  fixtures/ sessions/*.mmrec  transcripts/*.txt
   android/                     # Kotlin, Compose, CameraX, minSdk 29
-    app/src/main/java/com/mmc/
+    app/src/main/java/dev/dreamz/mmc/
       adapter/ Transport.kt ClassicRfcommTransport.kt BleTransport.kt WifiTcpTransport.kt
                SimTransport.kt ReplayTransport.kt
       elm/ Elm327Driver.kt Allowlist.kt Fingerprint.kt Parsers.kt Pids.kt Elm327Sim.kt

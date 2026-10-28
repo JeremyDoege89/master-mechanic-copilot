@@ -1,0 +1,7 @@
+# Starter read-only Ford DIDs for mode 0x22 (SPEC §6). Expanded Day 2.
+# A DID is readable only when ALLOW_MODE22=true AND the adapter profile
+# supports mode22 AND the DID is listed here.
+allow:
+  - F190   # VIN
+  - F191   # CALID
+  - F192   # CVN

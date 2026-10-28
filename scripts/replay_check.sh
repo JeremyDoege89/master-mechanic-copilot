@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# M0 stub: replay determinism check lands with M3 fixtures.
+# Verify .mmrec bundles (manifest sha256 of every member) via backend/mmc/replay/mmrec.py.
 # Usage: scripts/replay_check.sh [bundle ...]
 set -euo pipefail
 if [ "$#" -eq 0 ]; then
@@ -11,5 +11,5 @@ if [ "$#" -eq 1 ] && [ ! -e "$1" ]; then
   echo "replay_check: no bundles match, nothing to verify"
   exit 0
 fi
-echo "replay_check: M0 stub (no fixtures yet)"
-exit 0
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+PYTHONPATH="$ROOT/backend" exec python3 -m mmc.replay.mmrec verify "$@"
