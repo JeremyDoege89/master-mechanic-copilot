@@ -20,9 +20,12 @@ SAM 3.1 finds parts, Voice Transcribe keeps hands free, and Muse Code built it.
 | Toolchain on dreamz-code (`setup-dreamz-code.sh`) | Done Oct 27: Muse Code, uv/Python 3.12, Node 24, JDK 21, Android SDK + CLI, ffmpeg, gh |
 | GitHub CLI login | Done (`JeremyDoege89`) |
 | Meta Model API key (`meta-set-key`, `meta-smoke`) | **Not done** |
-| Muse Code sign-in + Contributor mode off | **Not done** |
+| Muse Code settings (`~/.config/muse/settings.json`) | Done Oct 28: Contributor mode off; Claude Code personal rules not imported, so Muse follows `AGENTS.md` only |
+| Muse Code sign-in + trusting `~/mmc` | **Not done** |
 | Rules confirmed in Discord | **Not done** (`docs/RULES.md` is all secondhand) |
-| Public repo | **Not created** (local folder `~/mmc` only, not yet a git repo) |
+| Repo | Local git repo at `~/mmc` with the first commit; **GitHub repo not created yet** |
+| `.env` | Created from `.env.example` without the key (the key comes from `~/.config/meta/model-api.env` via your shell) |
+| Phone (moto g, adb over Tailscale) | Connected Oct 28 |
 | Code | None yet. All code is written during the event by Muse Code. |
 
 We are two days behind the research schedule: its D1 (setup) and D2 (event store + ELM driver) haven't happened.
@@ -62,8 +65,10 @@ Day 1 morning, in this order:
        judges need to run it. Record answers in `docs/RULES.md` with date and link.
 2. [ ] Claim the $150 Meta credits (the form wasn't out on Oct 26; check again).
 3. [ ] `meta-set-key`, open a new terminal, then `meta-smoke`.
-4. [ ] `muse` → sign in → trust `~/mmc` → **turn Contributor mode off** (subscriptions default to it on).
-5. [ ] Create the public GitHub repo (name it; the folder is `~/mmc`) and push the docs. Check `.env` is gitignored first.
+4. [ ] `muse login`, then `cd ~/mmc && muse` and trust the folder when asked. Contributor mode is already off
+       in local settings; check that your account/subscription page agrees (subscriptions default it on).
+5. [ ] Publish the repo: `cd ~/mmc && gh repo create JeremyDoege89/master-mechanic-copilot --public --source . --remote origin --push`
+       (`.env` is already gitignored and the first commit was scanned for secrets).
 6. [ ] Set a spend alert in the Meta console; remember it **doesn't stop billing**, so the backend budget guard matters.
 
 Later:
