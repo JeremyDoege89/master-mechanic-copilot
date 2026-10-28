@@ -86,6 +86,28 @@ def test_raw_byte_flip_detected(tmp_path):
     assert not store.verify_chain()
 
 
+def test_float_last_digit_mutation_detected(tmp_path):
+    """A one-digit float change that parses to the same double must fail.
+
+    Regression test: 6.3373105101272424e+16 and ...425e+16 are the same
+    IEEE-754 double, so hash recomputation alone still passes; only the
+    raw-bytes-vs-canonical check catches it.
+    """
+    store = EventStore(tmp_path / "events.jsonl")
+    value = 6.3373105101272424e16
+    store.append("observation_added", {"x": value})
+    assert store.verify_chain()
+    raw = store.path.read_text(encoding="utf-8")
+    old = "6.3373105101272424e+16"
+    new = "6.3373105101272425e+16"
+    assert old in raw
+    assert float(old) == float(new) == value
+    store.path.write_text(raw.replace(old, new), encoding="utf-8")
+    mutated = json.loads(store.path.read_text(encoding="utf-8").splitlines()[0])
+    assert mutated["payload"] == {"x": value}
+    assert store.verify_chain() is False
+
+
 def test_non_ascii_payload_mutation_returns_false(tmp_path):
     store = EventStore(tmp_path / "events.jsonl")
     store.append("observation_added", {"note": "héllo wörld"})

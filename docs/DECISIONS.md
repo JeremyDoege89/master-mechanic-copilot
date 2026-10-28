@@ -38,9 +38,12 @@ Newest first. Each entry: date, decision, why. Add one whenever scope, a depende
 - No new dependencies (JUnit 4 + stdlib + `java.util.zip` on Android; stdlib-only
   `mmrec.py`). Real-vehicle recording stays an owner Day 2 task (PLAN.md #7).
 - Observed 2026-10-28: `test_chain_properties.py::test_single_byte_mutation_fails_verification`
-  (M1, hypothesis-generated input) failed once, then passed on 5 consecutive reruns
-  with M2 code untouched by the store. Treated as a pre-existing flake, not an M2
-  regression; revisit if it recurs.
+  (M1, hypothesis-generated input, `--hypothesis-seed=2`) failed deterministically, not a
+  flake: a single-byte mutation (e.g. the last digit of a float like 6.3373105101272424e+16)
+  can leave the parsed event semantically identical, so recomputed hashes still passed.
+  Fixed the same day: `verify_chain()` now also requires each stored line's raw bytes to
+  equal the canonical serialization of the parsed event (the exact bytes `append()` writes).
+  Regression test `test_float_last_digit_mutation_detected` covers it.
 
 ## 2026-10-28 — M0/M1 implementation decisions
 

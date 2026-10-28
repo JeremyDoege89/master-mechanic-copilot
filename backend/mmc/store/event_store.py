@@ -159,21 +159,36 @@ class EventStore:
         return event
 
     def verify_chain(self) -> bool:
-        """True iff every line parses and the whole chain is intact."""
+        """True iff every line parses and the whole chain is intact.
+
+        Each stored line's raw bytes must equal the canonical serialization
+        of the parsed event (the exact bytes append() writes). This catches
+        single-byte mutations that leave the parsed value unchanged (e.g. a
+        float's last digit changed so it parses to the same double, or
+        escape/encoding variants), where recomputed hashes alone still pass.
+        """
         try:
-            raw = self.path.read_text(encoding="utf-8")
-        except (OSError, ValueError):
-            # Missing/unreadable file, or bytes that are no longer valid UTF-8
-            # (e.g. a mutated multibyte character): the chain cannot verify.
+            raw_bytes = self.path.read_bytes()
+        except OSError:
+            return False
+        try:
+            raw = raw_bytes.decode("utf-8")
+        except UnicodeDecodeError:
+            # Bytes that are no longer valid UTF-8 (e.g. a mutated multibyte
+            # character): the chain cannot verify.
             return False
         if not raw.strip():
             return True
-        lines = raw.splitlines()
+        if not raw.endswith("\n"):
+            return False
+        lines = raw.split("\n")[:-1]
         prev = GENESIS_PREV_HASH
         for i, line in enumerate(lines):
             try:
                 event = json.loads(line)
             except json.JSONDecodeError:
+                return False
+            if line.encode("utf-8") != canonical_bytes(event):
                 return False
             if not isinstance(event, dict):
                 return False
