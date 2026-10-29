@@ -26,7 +26,7 @@ SAM 3.1 finds parts, Voice Transcribe keeps hands free, and Muse Code built it.
 | Repo | Public on GitHub (`JeremyDoege89/master-mechanic-copilot`) |
 | `.env` | Created from `.env.example` without the key (the key comes from `~/.config/meta/model-api.env` via your shell) |
 | Phone (moto g, adb over Tailscale) | Connected Oct 28 |
-| Code | Written by Muse Code, driven headlessly (`.agents/muse-run.sh`; plans in `.agents/plans/`). **Done (Oct 29 midday): M0-M3, M4 built (Ford check pending), M5 vision, upload mode, Spark Open, M6, M6B, M7 (voice proxy + grammar, judge polish, README, release script, acceptance sweep).** Live voice transcription verified with real speech. Judge site live on Modal. GitHub CI green again (was red 05:18-11:18 UTC: runner lacked ffmpeg/keys; `scripts/ci_parity.sh` now mirrors CI). **Running: fixes for the 14 M7 review findings** (voice persistence, Android voice wiring, sweep false-PASS). Waiting on owner: Ford baseline/M4 check, M5 photos, licence + keystore + build-story decisions. |
+| Code | Written by Muse Code, driven headlessly (`.agents/muse-run.sh`). **Done (Oct 29 PM): M0-M3, M4 built (Ford check pending), M5, upload, Spark Open, M6, M6B, M7 + all 41 Wonder review findings fixed.** Live voice transcription verified with real speech; judge site live on Modal (zero 4xx on a full judge run); GitHub CI green. Demo video plan in `docs/VIDEO.md`. **Running: real-session export tooling** (owner Ford sessions -> judge bundles by one command). **Planned Mon Nov 2 before freeze: final whole-repo Wonder review + fixes.** Waiting on owner: Ford baseline/M4 check, M5 photos, planted faults Sat, footage Mon, licence + keystore + build-story decisions. |
 | Model routing | Checked Oct 28 against `GET /v1/models`. **Product:** Spark 1.3 for reasoning, vision, instrument reading and PDF/video extraction; SAM 3.1 for masks and tracking; Voice Transcribe for hands-free; Wonder once per report for review; Muse Image kept out of diagnosis. **Muse Code:** `*-plan` and `*-review` jobs run on `muse-wonder-1.0`, builds and fixes on `muse-spark-1.3` (high), set in `.agents/muse-run.sh`. Standard IDs only, never `-contributor`. |
 | CI | GitHub runs backend tests + replay check + web build; Android builds and tests run on dreamz-code (see DECISIONS) |
 
@@ -121,7 +121,7 @@ Later:
 - [ ] 4+ real `.mmrec` bundles (healthy, MAF unplugged, vacuum leak, coil unplugged), also used as CI fixtures
 - [ ] 10 engine-bay photos + 10 multimeter photos (M5 acceptance set)
 - [ ] Screen recording of the D3 gate run
-- [ ] Demo video ≤ 3:00 (target 2:45), public link
+- [ ] Demo video ≤ 3:00 (target 2:45), public link (plan + shot list ready: `docs/VIDEO.md`)
 - [x] Deployed Replay & Report URL with a 60-second judge path in `docs/JUDGES.md` (live; JUDGES.md written, final pass in M7)
 - [ ] Signed release APK with simulator mode on a GitHub Release
 
