@@ -22,8 +22,8 @@ def _write_pack(tmp_path, likelihoods, outcomes=("a", "b")):
     pack = {
         "version": "test-v1",
         "hypotheses": {
-            "h1": {"prior": 0.5, "label": {"L1": "one", "L3": "one"}},
-            "h2": {"prior": 0.5, "label": {"L1": "two", "L3": "two"}},
+            "h1": {"prior": 0.5, "label": {"L1": "one", "L2": "one mid", "L3": "one tech"}},
+            "h2": {"prior": 0.5, "label": {"L1": "two", "L2": "two mid", "L3": "two tech"}},
         },
         "tests": {
             "t1": {
@@ -35,6 +35,11 @@ def _write_pack(tmp_path, likelihoods, outcomes=("a", "b")):
                 "safety_gate": "none",
                 "outcomes": list(outcomes),
                 "evaluator": "rule.direct",
+                "instructions_by_level": {
+                    "L1": "look at the thing",
+                    "L2": "inspect the thing",
+                    "L3": "check it",
+                },
                 "likelihoods": likelihoods,
             }
         },

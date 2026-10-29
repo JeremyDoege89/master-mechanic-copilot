@@ -194,6 +194,9 @@ async def upload_file_route(
 async def upload_pdf_extract(session_id: str, body: PdfExtractBody):
     session = _require_session(session_id)
     _require_writable(session)
+    from mmc import public as public_mod
+
+    public_mod.require_public_upload_paid()
     data, content_hash = _load_blob(body.blob_ref)
     if not data.lstrip().startswith(b"%PDF"):
         raise HTTPException(status_code=400, detail="blob is not a PDF")
@@ -310,6 +313,9 @@ async def upload_video_analyze(session_id: str, body: VideoAnalyzeBody):
 
     session = _require_session(session_id)
     _require_writable(session)
+    from mmc import public as public_mod
+
+    public_mod.require_public_upload_paid()
     data, content_hash = _load_blob(body.blob_ref)
     filename = Path(body.blob_ref).name
     if not filename.endswith((".mp4", ".mov")):

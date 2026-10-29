@@ -69,6 +69,12 @@ class SessionClient(baseUrl: String) {
 
     fun getState(sessionId: String): JSONObject = get("/sessions/$sessionId/state")
 
+    /** Level labels + tools questionnaire (M6 §1); falls back offline. */
+    fun getLevels(): JSONObject = get("/meta/levels")
+
+    /** Spend ledgers for the read-only Settings line (M6 §6, no keys). */
+    fun getBudget(): JSONObject = get("/budget")
+
     fun postTestResult(
         sessionId: String,
         testRef: String,

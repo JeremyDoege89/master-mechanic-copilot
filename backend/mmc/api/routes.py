@@ -76,8 +76,25 @@ class ResultBody(BaseModel):
     spec_id: str | None = None
 
 
+class ClearRequestBody(BaseModel):
+    # Pre-clear snapshot (client-read 03/07/0A DTCs, 02 freeze frame, Mode 06).
+    # dtcs must be present (possibly empty): no snapshot, no token.
+    dtcs: list[str] | None = None
+    freeze_frame: dict | None = None
+    mode06: dict | None = None
+
+
+class ClearConfirmBody(BaseModel):
+    token: str = ""
+    typed_confirmation: str = ""
+    engine_off_key_on: bool = False
+
+
 @router.post("/sessions")
 async def create_session(body: CreateSessionBody):
+    from mmc import public as public_mod
+
+    public_mod.require_public_session_mode(body.mode)
     registry = sess.get_registry()
     try:
         session = registry.create(
@@ -101,9 +118,70 @@ async def post_event(session_id: str, body: EventBody):
 
 
 @router.get("/sessions/{session_id}/state")
-async def get_state(session_id: str):
+async def get_state(session_id: str, upto_seq: int | None = None):
     session = _require_session(session_id)
-    return sess.compute_state(session)
+    return sess.compute_state(session, upto_seq=upto_seq)
+
+
+@router.get("/sessions/{session_id}/events")
+async def get_events(session_id: str, after_seq: int = 0):
+    """Raw event envelopes for the replay scrubber (seq-ordered)."""
+    session = _require_session(session_id)
+    return {
+        "events": [
+            e for e in session.store.iter_replay() if int(e.get("seq", 0)) > after_seq
+        ]
+    }
+
+
+class ReplayBody(BaseModel):
+    bundle_ref: str | None = None
+    session_id: str | None = None
+    fixture: str | None = None
+    speed: float = 1.0
+
+
+@router.post("/replay")
+async def post_replay(body: ReplayBody):
+    """Verify a bundle and fold it into a fresh read-only replay session."""
+    from mmc.replay import mmrec, runner
+
+    given = [k for k in ("bundle_ref", "session_id", "fixture") if getattr(body, k)]
+    if len(given) != 1:
+        raise HTTPException(
+            status_code=400,
+            detail="give exactly one of bundle_ref, session_id, fixture",
+        )
+    try:
+        if body.bundle_ref:
+            try:
+                data = blob_store.get(body.bundle_ref)
+            except (OSError, ValueError) as e:
+                raise HTTPException(status_code=404, detail=f"unknown blob: {e}")
+            try:
+                session = runner.replay_bundle_bytes(data, label=body.bundle_ref)
+            except mmrec.MmrecError as e:
+                raise HTTPException(status_code=400, detail=str(e))
+        elif body.session_id:
+            try:
+                session = runner.replay_session(body.session_id)
+            except KeyError:
+                raise HTTPException(status_code=404, detail="unknown session")
+        else:
+            assert body.fixture is not None
+            try:
+                data = runner.fixture_bytes(body.fixture)
+            except (FileNotFoundError, ValueError) as e:
+                raise HTTPException(status_code=404, detail=str(e))
+            try:
+                session = runner.replay_bundle_bytes(data, label=body.fixture)
+            except mmrec.MmrecError as e:
+                raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"session_id": session.id, "speed": body.speed}
 
 
 @router.post("/sessions/{session_id}/blobs")
@@ -192,12 +270,165 @@ async def post_test_result(session_id: str, test_ref: str, body: ResultBody):
             "seq": event["seq"], "hash": event["hash"]}
 
 
+@router.get("/meta/levels")
+async def meta_levels():
+    """Level labels + tools questionnaire options (M6 §1, SPEC §3)."""
+    from mmc import levels as levels_mod
+
+    return {"levels": dict(levels_mod.LEVEL_LABELS), "tools": list(levels_mod.TOOL_OPTIONS)}
+
+
+@router.get("/budget")
+async def get_budget():
+    """Spend ledgers (no keys): Meta $120, Baseten $80, public demo cap."""
+    from mmc import public as public_mod
+    from mmc.meta.budget import get_tracker
+
+    def part(name: str) -> dict:
+        tracker = get_tracker(name)
+        return {
+            "spend_usd": tracker.spend_usd,
+            "hard_stop_usd": tracker.hard_stop_usd,
+            "remaining_usd": max(0.0, tracker.hard_stop_usd - tracker.spend_usd),
+        }
+
+    body: dict = {
+        "meta": part("meta"),
+        "baseten": part("baseten"),
+        "public_mode": public_mod.is_public(),
+        "public_live": None,
+    }
+    if public_mod.is_public():
+        demo = public_mod.get_public_tracker()
+        body["public_live"] = {
+            "spend_usd": demo.spend_usd,
+            "cap_usd": public_mod.public_live_budget_usd(),
+        }
+    return body
+
+
+@router.post("/sessions/{session_id}/clear-codes/request")
+async def request_clear_codes(session_id: str, body: ClearRequestBody):
+    """Snapshot DTCs/freeze-frame/Mode 06 as evidence, then issue a token.
+
+    The backend never emits Mode 04: the confirmed token is handed to the
+    Android driver's ClearToken for one driver-side Mode 04.
+    """
+    import json as _json
+
+    from mmc import safety as safety_mod
+
+    session = _require_session(session_id)
+    if session.meta.get("mode") == "replay":
+        raise HTTPException(status_code=409, detail="replay sessions are read-only")
+    if body.dtcs is None:
+        raise HTTPException(
+            status_code=400,
+            detail="pre-clear snapshot required: dtcs (Modes 03/07/0A), "
+            "freeze_frame (02) and mode06 are saved as evidence first",
+        )
+    registry = sess.get_registry()
+    evidence_ids: list[str] = []
+    snapshots = [("dtc", {"dtcs": list(body.dtcs), "modes": ["03", "07", "0A"]})]
+    if body.freeze_frame is not None:
+        snapshots.append(("freeze_frame", dict(body.freeze_frame)))
+    if body.mode06 is not None:
+        snapshots.append(("mode06", dict(body.mode06)))
+    for etype, doc in snapshots:
+        blob = _json.dumps(doc, sort_keys=True).encode("utf-8")
+        blob_ref, sha = blob_store.put(blob)
+        evidence = {
+            "evidence_id": uuid.uuid4().hex,
+            "type": etype,
+            "blob_ref": blob_ref,
+            "content_hash": sha,
+            "ts": sess._utc_now(),
+        }
+        registry.append(session, "evidence_added", evidence)
+        evidence_ids.append(evidence["evidence_id"])
+    token = safety_mod.issue_token(session.id)
+    # The plaintext token is never logged — only its hash.
+    await _append_and_push(
+        session,
+        "codes_clear_requested",
+        {
+            "token_sha256": safety_mod._token_hash(token),
+            "evidence_ids": evidence_ids,
+            "consequences": safety_mod.CONSEQUENCES_TEXT,
+        },
+    )
+    return {"token": token, "consequences_text": safety_mod.CONSEQUENCES_TEXT}
+
+
+@router.post("/sessions/{session_id}/clear-codes/confirm")
+async def confirm_clear_codes(session_id: str, body: ClearConfirmBody):
+    from mmc import safety as safety_mod
+
+    session = _require_session(session_id)
+    if session.meta.get("mode") == "replay":
+        raise HTTPException(status_code=409, detail="replay sessions are read-only")
+    if body.typed_confirmation != "CLEAR CODES":
+        raise HTTPException(
+            status_code=400, detail="type CLEAR CODES exactly to confirm"
+        )
+    if not body.engine_off_key_on:
+        raise HTTPException(
+            status_code=400,
+            detail="engine-off/key-on attestation required",
+        )
+    try:
+        token_sha = safety_mod.consume_token(session.id, body.token)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"bad token: {e}")
+    event = await _append_and_push(
+        session, "codes_cleared", {"token_sha256": token_sha}
+    )
+    return {
+        "cleared": True,
+        "clear_token": body.token,
+        "seq": event["seq"],
+        "hash": event["hash"],
+    }
+
+
 @router.post("/sessions/{session_id}/report")
 async def build_report(session_id: str):
+    from mmc.meta import wonder as wonder_mod
+    from mmc.meta.client import MetaClient, MetaClientError, NoCachedResponse
+
     session = _require_session(session_id)
     registry = sess.get_registry()
     state = sess.compute_state(session)
     report = sess.build_report(session, state)
+    # One Wonder review per report; unavailable (no key / budget / API
+    # error) ships the report with wonder_review null, never blocks it.
+    # Wonder stays off in public replay mode (M6 fix 3).
+    from mmc import public as public_mod
+
+    if public_mod.is_public():
+        report["wonder_review"] = None
+        report["wonder_unavailable"] = "AI review unavailable in public replay mode."
+        audit = None
+    else:
+        audit = wonder_mod.build_audit_bundle(report, state)
+    if audit is not None:
+        try:
+            default_client = MetaClient(
+                on_call=lambda record: registry.append(
+                    session, record.get("kind", "llm_call"), record
+                ),
+            )
+        except MetaClientError as e:
+            report["wonder_review"] = None
+            report["wonder_unavailable"] = f"AI review unavailable: {e}"
+        else:
+            # attach_review maps budget/API/cache failures to null + the
+            # unavailable line itself; only unexpected errors escape.
+            try:
+                wonder_mod.attach_review(report, audit, default_client)
+            except (MetaClientError, NoCachedResponse) as e:
+                report["wonder_review"] = None
+                report["wonder_unavailable"] = f"AI review unavailable: {e}"
     sess.save_report(registry, report)
     registry.append(session, "report_built", {"report_id": report["report_id"]})
     await _broadcast(session.id)
@@ -210,6 +441,30 @@ async def get_report(report_id: str):
     if report is None:
         raise HTTPException(status_code=404, detail="unknown report")
     return JSONResponse(report)
+
+
+@router.get("/reports/{report_id}.html")
+async def get_report_html(report_id: str):
+    from fastapi.responses import HTMLResponse
+
+    from mmc.report import html as html_mod
+
+    report = sess.load_report(sess.get_registry(), report_id)
+    if report is None:
+        raise HTTPException(status_code=404, detail="unknown report")
+    return HTMLResponse(html_mod.render_html(report))
+
+
+@router.get("/reports/{report_id}.pdf")
+async def get_report_pdf(report_id: str):
+    from fastapi.responses import Response
+
+    from mmc.report import pdf as pdf_mod
+
+    report = sess.load_report(sess.get_registry(), report_id)
+    if report is None:
+        raise HTTPException(status_code=404, detail="unknown report")
+    return Response(pdf_mod.render_pdf(report), media_type="application/pdf")
 
 
 @router.websocket("/sessions/{session_id}/ws")

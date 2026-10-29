@@ -2,6 +2,99 @@
 
 Newest first. Each entry: date, decision, why. Add one whenever scope, a dependency or an architecture choice changes.
 
+## 2026-10-29 — M6 landed (levels, safety gates, report + Wonder, replay + web, Modal, budget)
+
+Plan `.agents/plans/M6.md` implemented in order, each step with its test
+first; full backend suite 378 passed + 1 skipped in ~118 s (under the
+3-minute cap); `scripts/replay_check.sh` OK; Android offline 89 unit tests
++ `assembleDebug` green; `web` `npm ci --offline` (local cache) + `vite
+build` green; `scripts/modal_smoke.sh` green against a local public-mode
+server (health/budget/judge replay/state/report json+html+pdf, $0 spend
+delta). No commit, per instruction.
+
+- §1 levels: `mmc/levels.py` is the only renderer (`hypothesis_label`,
+  `trace_text`, `instruction`, `summary`, `verbal_band` "Likely (about 6 in
+  10)"); both KP packs gained `instructions_by_level` + `label.L2` on every
+  test/hypothesis; the loader hard-fails missing L1/L3 text and L1 jargon
+  (`levels.JARGON_DENYLIST`: MAF/STFT/DTC/OBD-class acronyms, tool names
+  deliberately allowed); `compute_state` serves `instructions_by_level` on
+  ranked tests and full metadata (min_level/tools/gate) on blocked tests —
+  clients render blocked tests with reasons, never hide them. Prompts pinned
+  at `mmc/agent/prompts/` (`level_styles.md` + `system_v1.md` stub; live
+  Spark narration stays M7). Tools questionnaire canonical
+  (`TOOL_OPTIONS`, 8 tools) at `GET /meta/levels`; Android renders from it
+  with baked-in fallback, web has no session-create form so only the L1/L2/L3
+  switchers apply there.
+- §2 safety as code: `mmc/safety.py` (`GATE_CHECKLISTS` × 6 from SPEC
+  §8/SAFETY.md, `stop_triggers_for/from_events`, single-use 5-min hashed
+  clear-codes tokens). Gated result route behaviour unchanged (planner block
+  → 409 until `safety_ack`); state carries `gate_checklist` per gated test
+  and `stop_and_see_pro` (SRS B-codes, HV P0A/P1A codes, ECT ≥ 110 °C,
+  `safety:*` user flags — P030n alone does NOT trigger, flashing MIL is a
+  reported flag, not an inference). Clear-codes snapshots DTCs/freeze
+  frame/Mode 06 as evidence first, needs exact `CLEAR CODES` + engine-off
+  attestation; backend never emits Mode 04 (confirm returns the driver's
+  one-shot token). Android generalised the sound-only confirm into one
+  `SafetyGateCard` (pure `SafetyGates` object + JUnit); web cards show the
+  checklist and the pro banner replaces cards on trigger.
+- §3 report moved to `mmc/report/` (`build.py`, `html.py`, `pdf.py`,
+  `templates/report.html.j2`); `sessions.build_report` delegates.
+  Dependency note (AGENTS.md §8): `jinja2>=3.1` declared for HTML
+  (autoescape on; sandbox installed it from system packages, Modal/CI
+  install from the pin); PDF is stdlib-only (import-graph test). Report
+  gains verbatim expected-vs-measured rows (engine-sound rows carry DSP
+  numbers with origin `signal_processing`, rendered "Signal processing
+  (DSP), not AI"), per-evidence AI-extracted labelling, `fallback_used`,
+  second opinions, SAM overlay refs, stop triggers, `vin_last6` (full VIN
+  asserted absent), and real `prompts_sha256` over `agent/prompts/*.md`.
+  Wonder (`mmc/meta/wonder.py`, `wonder_review.json` → 16 schemas) gets the
+  report PLUS the audit bundle (per-hypothesis traces, missing_evidence,
+  blocked tests + reasons, second-opinion disagreements, fallback use);
+  gaps may cite `test_ref`/`evidence_id`; probability keys refused; one
+  `muse-wonder-1.0` call at `EFFORT_WONDER` on the shared Meta tracker,
+  stored on the report so rebuilds cost $0; over-budget/API failure ships
+  `null` + "AI review unavailable" under the literal "AI review — Muse
+  Wonder (does not change the diagnosis)" heading. No Spark Open fallback
+  for Wonder. (Two hand-written minified schemas shipped with brace errors;
+  fixed and now parse-validated immediately after every schema write.)
+- §4 replay: `mmc/replay/runner.py` (`POST /replay`
+  bundle_ref|session_id|fixture, fixture seeding for the judge) folds rows
+  through the normal append path into read-only `mode=replay` sessions;
+  `GET /sessions/{id}/events?after_seq=` + `GET state?upto_seq=` power the
+  scrubber. `test_replay_zero_spend` proves $0 on both ledgers with
+  posteriors bitwise-equal. Web (`web/src`, no new deps): Replay page (open
+  session / .mmrec upload / `?judge=1` one-click sim demo labelled sim,
+  scrubber + play at bundle speed, L1/L2/L3 cards, blocked reasons, safety
+  checklists, evidence with AI badges, chart, build-report handoff) and
+  Report page (level summaries, trace, expected-vs-measured with DSP label,
+  AI review, reproducibility, .html/.pdf links); `SamOverlay` renders SVG
+  masks/boxes from props; dev proxy added to `vite.config.ts`.
+- §5 Modal (CLI 1.6.3 API: `App`/`Image.debian_slim`/`Volume.from_name`/
+  `Secret.from_name`/`asgi_app`): root `modal_app.py` serves the API with
+  `web/dist` at `/`, volume `mmc-data` at `DATA_DIR`, secret
+  `mmc-secrets`, first-boot fixture seeding, and a startup budget-guard
+  check that fails loudly. Owner runs `modal secret create` + `modal
+  deploy` (sandbox has no network/modal package: verified offline via a
+  stub-`modal` import test + the FastAPI wiring + the smoke script against
+  a local server).
+- §6 budget on the landed `get_tracker(name)` registries (not duplicated):
+  `GET /budget` (meta/baseten spend+stop+remaining, `public_mode`,
+  `public_live` cap when public; no keys), web `BudgetBadge` (amber ≥80%,
+  red at stop, public cap shown), Android read-only Settings line.
+- Fix 3 public demo: `MMC_PUBLIC_MODE=replay` default only on Modal (local
+  dev unaffected); public allows replay/upload sessions, 501s paid
+  vision/PDF/video and skips Wonder; `MMC_PUBLIC_LIVE_BUDGET_USD>0`
+  (default 0 = off) enables photo keyframe + instrument only on a separate
+  capped tracker (`with_public_budget`, cache-live, no Open second
+  opinion), 10 paid calls/hour/IP (429), badge shows the public cap.
+  `REPLAY_USE_CACHED_LLM` forced on at startup in public.
+- Test hygiene: `test_modal_app` snapshots/restores process env and the
+  shared app routes (its `create_app()` otherwise poisoned later tests
+  with `MMC_PUBLIC_MODE=replay` — caught by the full suite, not by
+  per-file runs); vision `request` params keep a default so direct handler
+  calls in old tests still work; `_write_pack` modernised with L2 labels +
+  instructions (expectations unchanged).
+
 ## 2026-10-29 — M5 review findings 1–15 fixed (blocking 1–4 first)
 
 Each finding got a failing test, then the fix, then green. Backend suite

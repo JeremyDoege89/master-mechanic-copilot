@@ -11,7 +11,6 @@ on every read, never stored, so replay always reproduces identical numbers.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import threading
@@ -25,6 +24,8 @@ from referencing import Registry, Resource
 from referencing.jsonschema import DRAFT202012
 
 from mmc import __version__ as ENGINE_VERSION
+from mmc import levels as levels_mod
+from mmc import safety as safety_mod
 from mmc.engine import bayes, planner, stoprule
 from mmc.engine import trace as trace_mod
 from mmc.kp.loader import PACKS_DIR, KnowledgePack, load_pack
@@ -128,6 +129,7 @@ def model_pins() -> dict:
         "wonder": os.environ.get("MODEL_WONDER", "muse-wonder-1.0"),
         "sam": os.environ.get("MODEL_SAM", "sam-3.1"),
         "asr": os.environ.get("MODEL_ASR", "muse-voice-transcribe-1.0"),
+        "spark_open": os.environ.get("MODEL_SPARK_OPEN", "meta-models/muse-spark-open-1026"),
     }
 
 
@@ -255,8 +257,12 @@ def _fmt_value(value) -> str:
     return str(value)
 
 
-def compute_state(session: Session) -> dict:
-    """Fold the event log into hypotheses, rankings, and the test record."""
+def compute_state(session: Session, upto_seq: int | None = None) -> dict:
+    """Fold the event log into hypotheses, rankings, and the test record.
+
+    ``upto_seq`` folds only events with ``seq <= upto_seq`` (replay
+    scrubber); None folds the whole log.
+    """
     pack = get_pack()
     meta = session.meta
     posteriors = {h: spec["prior"] for h, spec in pack.hypotheses.items()}
@@ -265,12 +271,17 @@ def compute_state(session: Session) -> dict:
     trace_seq: dict[str, int] = {h: 0 for h in posteriors}
     acked: set[str] = set()
     results: list[dict] = []
+    observations: list[dict] = []
     update_seq = 0
 
     for event in session.store.iter_replay():
+        if upto_seq is not None and int(event.get("seq", 0)) > upto_seq:
+            break
         payload = event["payload"]
         if event["type"] == "safety_ack" and payload.get("gate"):
             acked.add(str(payload["gate"]))
+        elif event["type"] == "observation_added":
+            observations.append(payload)
         elif event["type"] == "test_result":
             test_ref = payload["test_id"]
             outcome = payload["outcome"]
@@ -286,6 +297,16 @@ def compute_state(session: Session) -> dict:
             meas_value = measured.get("value", measured) if isinstance(measured, dict) else measured
             for hyp in posteriors:
                 trace_seq[hyp] += 1
+                lr = bayes.likelihood_ratio(
+                    hyp, outcome, test.likelihoods, before, len(test.outcomes)
+                )
+                texts = levels_mod.trace_text(
+                    pack.hypotheses[hyp]["label"],
+                    outcome,
+                    before[hyp],
+                    posteriors[hyp],
+                    lr,
+                )
                 traces[hyp].append(
                     trace_mod.make_entry(
                         seq=trace_seq[hyp],
@@ -301,8 +322,9 @@ def compute_state(session: Session) -> dict:
                         lr_source=test.evaluator or "kp",
                         expected=exp_str,
                         measured=_fmt_value(meas_value),
-                        text_l1=f"{pack.hypotheses[hyp]['label']['L1']}: {outcome}",
-                        text_l3=f"{pack.hypotheses[hyp]['label']['L3']}: {outcome}",
+                        text_l1=texts["L1"],
+                        text_l2=texts["L2"],
+                        text_l3=texts["L3"],
                     )
                 )
                 histories[hyp].append(
@@ -316,10 +338,11 @@ def compute_state(session: Session) -> dict:
     )
     next_tests = []
     for rec in ranked:
+        test = pack.tests[rec["kp_test_ref"]]
         entry = {
             "rank": rec["rank"],
             "kp_test_ref": rec["kp_test_ref"],
-            "kind": pack.tests[rec["kp_test_ref"]].kind,
+            "kind": test.kind,
             "eig_bits": rec["eig_bits"],
             "cost": rec["cost"],
             "score": rec["score"],
@@ -328,9 +351,36 @@ def compute_state(session: Session) -> dict:
             "required_tools": rec["required_tools"],
             "min_level": rec["min_level"],
             "safety_gate": rec["safety_gate"],
+            "instructions_by_level": dict(test.instructions_by_level),
             "blocked_reasons": [],
         }
+        checklist = safety_mod.gate_checklist(test.safety_gate)
+        if checklist is not None:
+            entry["gate_checklist"] = checklist
         next_tests.append(entry)
+    blocked_tests = []
+    for b in blocked:
+        test = pack.tests.get(b["kp_test_ref"])
+        blocked_entry: dict = {
+            "kp_test_ref": b["kp_test_ref"],
+            "blocked_reasons": b["blocked_reasons"],
+            # Never hidden: clients render these with reasons (§1).
+            "kind": test.kind if test else "",
+            "required_tools": list(test.tools) if test else [],
+            "min_level": test.min_level if test else "L1",
+            "safety_gate": test.safety_gate if test else "none",
+            "instructions_by_level": dict(test.instructions_by_level) if test else {},
+        }
+        if test is not None:
+            checklist = safety_mod.gate_checklist(test.safety_gate)
+            if checklist is not None:
+                blocked_entry["gate_checklist"] = checklist
+        blocked_tests.append(blocked_entry)
+    # Stop-and-see-a-pro triggers (code, §2): on hit the runnable cards are
+    # replaced by the pro-referral banner on every client.
+    stop_info = safety_mod.stop_triggers_from_events(results, observations)
+    if stop_info["triggers"]:
+        next_tests = []
 
     hypotheses = []
     for hyp, current in sorted(posteriors.items(), key=lambda kv: kv[1], reverse=True):
@@ -353,9 +403,8 @@ def compute_state(session: Session) -> dict:
         "video_overlays": video_overlays(session.id),
         "hypotheses": hypotheses,
         "next_tests": next_tests,
-        "blocked_tests": [
-            {"kp_test_ref": b["kp_test_ref"], "blocked_reasons": b["blocked_reasons"]} for b in blocked
-        ],
+        "blocked_tests": blocked_tests,
+        "stop_and_see_pro": stop_info,
         "missing_evidence": planner.missing_evidence(pack, posteriors, performed),
         "tests_log": [
             {
@@ -379,75 +428,12 @@ def should_stop_from_state(state: dict) -> bool:
 
 
 # -- reports -----------------------------------------------------------------
-
-def _prompts_sha() -> str:
-    # M4 performs no LLM calls; pin the no-prompt marker for reproducibility.
-    return hashlib.sha256(b"m4-no-llm-prompts").hexdigest()
-
+# Moved to mmc/report/ in M6; this wrapper keeps the M4 call sites working.
 
 def build_report(session: Session, state: dict) -> dict:
-    top = state["hypotheses"][0]
-    top_label_l1 = top["label"]["L1"]
-    n_tests = len(state["tests_log"])
-    concluded = should_stop_from_state(state)
-    if concluded:
-        conclusion = (
-            f"Most likely: {top_label_l1} "
-            f"({top['hypothesis_id']}, p={top['current']:.2f} after {n_tests} test(s))."
-        )
-    else:
-        suspects = ", ".join(
-            f"{h['label']['L1']} (p={h['current']:.2f})" for h in state["hypotheses"][:3]
-        )
-        conclusion = (
-            f"Not enough evidence yet — no conclusion after {n_tests} test(s). "
-            f"Current suspects: {suspects}. Run the recommended tests first."
-        )
-    evidence_index: list[str] = []
-    for entry in state["tests_log"]:
-        for eid in entry["evidence_ids"]:
-            if eid not in evidence_index:
-                evidence_index.append(eid)
-    gates = sorted(
-        {t.get("safety_gate", "none") for t in state["next_tests"]} |
-        {b.get("safety_gate", "none") for b in state.get("blocked_tests", [])}
-        - {"none"}
-    )
-    safety_notes = (
-        [f"Safety gate acknowledged during session: {g}." for g in gates]
-        or ["No safety-gated tests were run in this session."]
-    )
-    report = {
-        "report_id": uuid.uuid4().hex,
-        "session_id": session.id,
-        "conclusion": conclusion,
-        "summary_by_level": {
-            "L1": conclusion,
-            "L2": (
-                f"{top_label_l1} suspected (p={top['current']:.2f}); "
-                f"{n_tests} test(s) performed."
-            ) if concluded else conclusion,
-            "L3": (
-                f"{top['hypothesis_id']} posterior {top['current']:.3f} "
-                f"({top_label_l1} / {top['label']['L3']}) after {n_tests} test(s)."
-            ) if concluded else conclusion,
-        },
-        "hypotheses_final": state["hypotheses"],
-        "tests": [
-            {"test_ref": e["test_ref"], "outcome": e["outcome"]} for e in state["tests_log"]
-        ],
-        "evidence_index": evidence_index,
-        "safety_notes": safety_notes,
-        "reproducibility": {
-            "engine_version": ENGINE_VERSION,
-            "kp_version": session.meta["kp_version"],
-            "log_head_hash": session.store.head_hash(),
-            "model_pins": session.meta["model_pins"],
-            "prompts_sha256": _prompts_sha(),
-        },
-    }
-    validate("report", report)
-    return report
+    from mmc.report import build as report_build
+
+    return report_build.build_report(session, state)
 
 
 def save_report(registry: SessionRegistry, report: dict) -> Path:

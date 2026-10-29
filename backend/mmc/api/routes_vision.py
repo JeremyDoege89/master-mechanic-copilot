@@ -24,7 +24,7 @@ from typing import Any, Callable, Protocol
 
 logger = logging.getLogger(__name__)
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from mmc import sessions as sess
@@ -141,6 +141,38 @@ class LiveVisionAnalyzer:
             timeout_s=client.timeout_s,
         )
         return LiveVisionAnalyzer(bound_primary, self._open_or_none(), self._on_second_opinion)
+
+    def with_public_budget(self, session: sess.Session, tracker: Any) -> "LiveVisionAnalyzer":
+        """Public demo copy (M6 fix 3): Meta spend hits the capped demo tracker.
+
+        The demo budget pays for novel user photos, so this copy is
+        cache-live (``replay_cached=False``) — the forced public default
+        stays cache-only for every other path. No Open second opinion or
+        fallback on the demo cap: one provider, one ledger, one rate unit
+        per photo.
+        """
+        registry = sess.get_registry()
+
+        def on_call(record: dict) -> None:
+            try:
+                registry.append(session, record.get("kind", "llm_call"), record)
+            except Exception:
+                pass
+
+        client = self._client_or_default()
+        public_client = MetaClient(
+            api_key=getattr(client, "_api_key", None),
+            base_url=client.base_url,
+            models=dict(client.models),
+            budget=tracker,
+            cache_dir=client.cache_dir,
+            replay_cached=False,
+            transport=getattr(client, "_transport", None),
+            on_call=on_call,
+            sleep=getattr(client, "_sleep", None),
+            timeout_s=client.timeout_s,
+        )
+        return LiveVisionAnalyzer(public_client, None, self._on_second_opinion)
 
     def _run_primary(self, image: bytes, open_client: Any = _UNSET) -> tuple[dict, dict]:
         client = self._client_or_default()
@@ -382,8 +414,24 @@ def _load_blob(blob_ref: str) -> tuple[bytes, str]:
     return data, hashlib.sha256(data).hexdigest()
 
 
+def _client_ip(request: Request | None) -> str:
+    try:
+        return request.client.host if request is not None and request.client else "unknown"
+    except Exception:
+        return "unknown"
+
+
+def _public_tracker_for(analyzer: VisionAnalyzer, request: Request | None) -> Any | None:
+    """Public demo allowance: None = default ledgers; tracker = demo cap."""
+    if not isinstance(analyzer, LiveVisionAnalyzer):
+        return None
+    from mmc import public as public_mod
+
+    return public_mod.vision_allowance(live=True, ip=_client_ip(request))
+
+
 @router.post("/sessions/{session_id}/vision/keyframe")
-async def vision_keyframe(session_id: str, body: KeyframeBody):
+async def vision_keyframe(session_id: str, body: KeyframeBody, request: Request = None):  # type: ignore[assignment]
     from mmc.api.routes import _broadcast as _push_state
 
     session = _require_session(session_id)
@@ -392,6 +440,7 @@ async def vision_keyframe(session_id: str, body: KeyframeBody):
     registry = sess.get_registry()
     evidence_id = uuid.uuid4().hex
     analyzer = get_analyzer()
+    public_tracker = _public_tracker_for(analyzer, request)
     full = getattr(analyzer, "analyze_keyframe_full", None)
     if full is None:
         try:
@@ -407,7 +456,11 @@ async def vision_keyframe(session_id: str, body: KeyframeBody):
         assert isinstance(analyzer, LiveVisionAnalyzer)
         loop = asyncio.get_running_loop()
         try:
-            bound = analyzer.bind(session)
+            bound = (
+                analyzer.with_public_budget(session, public_tracker)
+                if public_tracker is not None
+                else analyzer.bind(session)
+            )
         except (ValueError, MetaClientError) as e:
             raise HTTPException(status_code=502, detail=f"vision backend: {e}")
 
@@ -476,17 +529,22 @@ async def vision_keyframe(session_id: str, body: KeyframeBody):
 
 
 @router.post("/sessions/{session_id}/vision/instrument")
-async def vision_instrument(session_id: str, body: InstrumentBody):
+async def vision_instrument(session_id: str, body: InstrumentBody, request: Request = None):  # type: ignore[assignment]
     session = _require_session(session_id)
     _require_writable(session)
     image, _sha = _load_blob(body.blob_ref)
     analyzer = get_analyzer()
+    public_tracker = _public_tracker_for(analyzer, request)
     # Finding #7: the live analyzer is bound to the session so the Meta
     # llm_call record reaches the audit log (only Baseten fallback records
     # were appended before); the reading itself still becomes evidence
     # only through the confirm route.
     if isinstance(analyzer, LiveVisionAnalyzer):
-        bound = analyzer.bind(session)
+        bound = (
+            analyzer.with_public_budget(session, public_tracker)
+            if public_tracker is not None
+            else analyzer.bind(session)
+        )
         try:
             # Finding #8: the network call leaves the event loop.
             reading, record = await asyncio.to_thread(bound.analyze_instrument_full, image)

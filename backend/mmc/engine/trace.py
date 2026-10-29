@@ -20,6 +20,7 @@ def make_entry(
     expected: str = "",
     measured: str = "",
     text_l1: str = "",
+    text_l2: str = "",
     text_l3: str = "",
 ) -> dict:
     return {
@@ -33,5 +34,6 @@ def make_entry(
         "expected": expected,
         "measured": measured,
         "text_L1": text_l1,
+        "text_L2": text_l2,
         "text_L3": text_l3,
     }

@@ -1,0 +1,1 @@
+{"agrees_with_top":true,"gaps":[{"issue":"fuel pressure never checked","rationale":"would separate fuel_delivery_low from unmetered air","test_ref":"fuel_pressure_test"}],"narrative":"Idle-lean evidence supports the air-leak lead, but fuel delivery is still open — run the rail pressure check before concluding."}

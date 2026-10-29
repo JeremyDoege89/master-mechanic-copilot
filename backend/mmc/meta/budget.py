@@ -38,6 +38,13 @@ def estimate_spark(input_tokens: int, output_tokens: int, cached_tokens: int = 0
     )
 
 
+def estimate_wonder(input_tokens: int, output_tokens: int) -> float:
+    return (
+        max(0, input_tokens) / 1e6 * WONDER_INPUT_PER_MTOK
+        + max(0, output_tokens) / 1e6 * WONDER_OUTPUT_PER_MTOK
+    )
+
+
 def estimate_spark_open(input_tokens: int, output_tokens: int, cached_tokens: int = 0) -> float:
     """Pre-call estimate for Spark Open via Baseten (Chat Completions).
 

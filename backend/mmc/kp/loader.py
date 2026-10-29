@@ -21,6 +21,14 @@ LEVELS = {"L1": 1, "L2": 2, "L3": 3}
 PACKS_DIR = Path(__file__).resolve().parent / "packs"
 
 
+def _l1_clean(what: str, text: str, path: str | Path) -> None:
+    from mmc.levels import check_l1
+
+    hits = check_l1(text)
+    if hits:
+        raise ValueError(f"{path}: {what} L1 text uses jargon {hits}: {text!r}")
+
+
 @dataclass
 class KpTest:
     ref: str
@@ -34,6 +42,7 @@ class KpTest:
     outcomes: list[str] = field(default_factory=list)
     evaluator: str = ""
     likelihoods: dict[str, dict[str, float]] = field(default_factory=dict)
+    instructions_by_level: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -71,8 +80,9 @@ def load_pack(path: str | Path) -> KnowledgePack:
         if not spec.get("prior", 0) > 0:
             raise ValueError(f"{path}: hypothesis {hyp} needs a positive prior")
         label = spec.get("label", {})
-        if "L1" not in label or "L3" not in label:
-            raise ValueError(f"{path}: hypothesis {hyp} label needs L1 and L3 text")
+        if "L1" not in label or "L2" not in label or "L3" not in label:
+            raise ValueError(f"{path}: hypothesis {hyp} label needs L1, L2 and L3 text")
+        _l1_clean(f"hypothesis {hyp} label", str(label["L1"]), path)
 
     total_prior = sum(spec["prior"] for spec in hyp_defs.values())
     hypotheses = {
@@ -98,6 +108,16 @@ def load_pack(path: str | Path) -> KnowledgePack:
         uniform = {o: 1.0 / len(outcomes) for o in outcomes}
         for hyp in hyp_defs:
             likelihoods.setdefault(hyp, dict(uniform))
+        raw_instr = spec.get("instructions_by_level") or {}
+        if "L1" not in raw_instr or "L3" not in raw_instr:
+            raise ValueError(f"{path}: test {ref} needs instructions_by_level L1 and L3 text")
+        _l1_clean(f"test {ref} instruction", str(raw_instr["L1"]), path)
+        # Fallback chain L2 -> L1 -> L3 for packs that only pin the extremes.
+        instructions = {
+            "L1": str(raw_instr["L1"]),
+            "L2": str(raw_instr.get("L2") or raw_instr["L1"] or raw_instr["L3"]),
+            "L3": str(raw_instr["L3"]),
+        }
         tests[ref] = KpTest(
             ref=ref,
             kind=spec.get("kind", ""),
@@ -110,6 +130,7 @@ def load_pack(path: str | Path) -> KnowledgePack:
             outcomes=outcomes,
             evaluator=spec.get("evaluator", ""),
             likelihoods=likelihoods,
+            instructions_by_level=instructions,
         )
     return KnowledgePack(
         version=version,

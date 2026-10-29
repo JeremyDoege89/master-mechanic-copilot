@@ -61,27 +61,58 @@ def load(path: str | Path) -> dict[str, bytes]:
         return {info.filename: zf.read(info.filename) for info in zf.infolist()}
 
 
+def loads(data: bytes) -> dict[str, bytes]:
+    """Return {member_name: raw bytes} for an in-memory bundle (blobs, uploads)."""
+    import io
+
+    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+        return {info.filename: zf.read(info.filename) for info in zf.infolist()}
+
+
 def verify(path: str | Path) -> dict:
     """Verify manifest hashes; return the manifest. Raises MmrecError."""
     try:
         members = load(path)
     except (zipfile.BadZipFile, zlib.error, OSError, KeyError) as e:
         raise MmrecError(f"{path}: unreadable bundle: {e}") from e
+    return verify_members(members, str(path))
+
+
+def verify_members(members: dict[str, bytes], label: str = "<memory>") -> dict:
+    """Verify manifest hashes over already-loaded members. Raises MmrecError."""
     if MANIFEST not in members:
-        raise MmrecError(f"{path}: missing {MANIFEST}")
+        raise MmrecError(f"{label}: missing {MANIFEST}")
     try:
         manifest = json.loads(members[MANIFEST].decode("utf-8"))
     except (ValueError, UnicodeDecodeError) as e:
-        raise MmrecError(f"{path}: bad {MANIFEST}: {e}") from e
+        raise MmrecError(f"{label}: bad {MANIFEST}: {e}") from e
     if manifest.get("format") != FORMAT:
-        raise MmrecError(f"{path}: bad format tag {manifest.get('format')!r}")
+        raise MmrecError(f"{label}: bad format tag {manifest.get('format')!r}")
     expected = manifest.get("files", {})
     for name in DATA_MEMBERS:
         if name not in members:
-            raise MmrecError(f"{path}: missing member {name}")
+            raise MmrecError(f"{label}: missing member {name}")
         if expected.get(name) != sha256(members[name]):
-            raise MmrecError(f"{path}: hash mismatch on {name}")
+            raise MmrecError(f"{label}: hash mismatch on {name}")
     return manifest
+
+
+def verify_bytes(data: bytes, label: str = "<memory>") -> dict:
+    """Verify an in-memory bundle. Raises MmrecError."""
+    try:
+        members = loads(data)
+    except (zipfile.BadZipFile, zlib.error, OSError, KeyError) as e:
+        raise MmrecError(f"{label}: unreadable bundle: {e}") from e
+    return verify_members(members, label)
+
+
+def event_rows(members: dict[str, bytes]) -> list[dict]:
+    """Parsed events.jsonl rows in file order (tolerates legacy slim rows)."""
+    rows = []
+    for line in members["events.jsonl"].decode("utf-8").splitlines():
+        if line.strip():
+            rows.append(json.loads(line))
+    return rows
 
 
 def transcript_rows(path: str | Path) -> list[dict]:

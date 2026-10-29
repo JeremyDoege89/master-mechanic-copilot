@@ -3,20 +3,21 @@
 version: ford-gen-v1
 
 hypotheses:
-  vacuum_leak_post_maf: {prior: 0.15, label: {L1: "Air leak after the airflow sensor", L3: "Unmetered air leak post-MAF"}}
-  maf_contaminated: {prior: 0.12, label: {L1: "Dirty airflow sensor", L3: "MAF sensor contaminated (under-reporting)"}}
-  maf_circuit_open: {prior: 0.05, label: {L1: "Airflow sensor unplugged or its wire broken", L3: "MAF circuit open (P0102 class)"}}
-  iat_circuit_open: {prior: 0.03, label: {L1: "Temperature sensor wire broken", L3: "IAT circuit open (P0113 class)"}}
-  fuel_delivery_low: {prior: 0.08, label: {L1: "Engine is not getting fuel", L3: "Fuel delivery insufficient (pump / fuse / pressure)"}}
-  thermostat_stuck_open: {prior: 0.06, label: {L1: "Engine never warms up properly", L3: "Thermostat stuck open (P0128 class)"}}
-  ignition_misfire_cyl: {prior: 0.08, label: {L1: "One cylinder is misfiring", L3: "Single-cylinder ignition misfire (P030n class)"}}
-  charging_low: {prior: 0.04, label: {L1: "Battery or charging problem", L3: "Charging system undervoltage"}}
-  o2_slow_b1s1: {prior: 0.04, label: {L1: "Oxygen sensor reacting slowly", L3: "Upstream O2 sensor slow/lazy (bank 1 sensor 1)"}}
-  healthy: {prior: 0.15, label: {L1: "No fault found", L3: "No fault (healthy vehicle)"}}
-  other: {prior: 0.10, label: {L1: "Something else we have not pinned down", L3: "Other / unmodeled fault (leak node)"}}
+  vacuum_leak_post_maf: {prior: 0.15, label: {L1: "Air leak after the airflow sensor", L2: "Intake leak downstream of the airflow sensor", L3: "Unmetered air leak post-MAF"}}
+  maf_contaminated: {prior: 0.12, label: {L1: "Dirty airflow sensor", L2: "Airflow sensor under-reading from contamination", L3: "MAF sensor contaminated (under-reporting)"}}
+  maf_circuit_open: {prior: 0.05, label: {L1: "Airflow sensor unplugged or its wire broken", L2: "Airflow sensor circuit open (unplugged or broken wire)", L3: "MAF circuit open (P0102 class)"}}
+  iat_circuit_open: {prior: 0.03, label: {L1: "Temperature sensor wire broken", L2: "Intake-air temperature circuit open", L3: "IAT circuit open (P0113 class)"}}
+  fuel_delivery_low: {prior: 0.08, label: {L1: "Engine is not getting fuel", L2: "Low fuel pressure or delivery fault", L3: "Fuel delivery insufficient (pump / fuse / pressure)"}}
+  thermostat_stuck_open: {prior: 0.06, label: {L1: "Engine never warms up properly", L2: "Thermostat stuck open (engine runs too cool)", L3: "Thermostat stuck open (P0128 class)"}}
+  ignition_misfire_cyl: {prior: 0.08, label: {L1: "One cylinder is misfiring", L2: "Single-cylinder misfire (ignition fault)", L3: "Single-cylinder ignition misfire (P030n class)"}}
+  charging_low: {prior: 0.04, label: {L1: "Battery or charging problem", L2: "Charging voltage low (battery or alternator)", L3: "Charging system undervoltage"}}
+  o2_slow_b1s1: {prior: 0.04, label: {L1: "Oxygen sensor reacting slowly", L2: "Upstream oxygen sensor slow to react", L3: "Upstream O2 sensor slow/lazy (bank 1 sensor 1)"}}
+  healthy: {prior: 0.15, label: {L1: "No fault found", L2: "No fault found (readings look normal)", L3: "No fault (healthy vehicle)"}}
+  other: {prior: 0.10, label: {L1: "Something else we have not pinned down", L2: "Different fault not in the suspect list", L3: "Other / unmodeled fault (leak node)"}}
 
 tests:
   dtc_read:
+    instructions_by_level: {L1: "Read the fault codes with a scan tool or the app. Write down every code exactly as shown, for example P0303. Do not clear the codes.", L2: "Pull stored, pending and permanent fault codes over the adapter. Record every code exactly as shown and do not clear them, clearing wipes the saved freeze-frame snapshot.", L3: "Dump 03/07/0A codes plus 02 freeze frame. Log raw hex. No Mode 04."}
     kind: obd_read
     min_level: L1
     tools: []
@@ -39,6 +40,7 @@ tests:
       other: {p0102: 0.05, p0113: 0.05, p0128: 0.05, p030n: 0.05, none: 0.45, other_codes: 0.35}
 
   maf_pid_plausibility:
+    instructions_by_level: {L1: "With the engine warm and idling outside, look at the airflow reading on the app and compare it with the expected number shown. Near zero or far below expected means the sensor may be dirty or unplugged.", L2: "At warm idle, log airflow in grams per second plus engine speed and pressures. The app computes expected airflow from engine size; under-reading with a lean mixture points to a dirty sensor.", L3: "Warm idle: capture MAF g/s vs physics.maf_expected from engine speed, displacement and pressures. Ratio below 0.7 with lean trims means under-report."}
     kind: obd_calc
     min_level: L1
     tools: []
@@ -61,6 +63,7 @@ tests:
       other: {reads_zero: 0.15, under_reports: 0.22, plausible: 0.40, over_reports: 0.23}
 
   iat_plausibility:
+    instructions_by_level: {L1: "With the engine cold, read the incoming-air temperature number on the app. If it shows something impossible like minus 40, the temperature sensor wire is broken.", L2: "Key on, engine cold: read the intake-air temperature and compare against the real outside temperature. Minus 40 means an open sensor circuit.", L3: "Cold key-on: intake-air temperature vs ambient. At or below minus 35 means open circuit."}
     kind: obd_read
     min_level: L1
     tools: []
@@ -83,6 +86,7 @@ tests:
       other: {minus40: 0.10, plausible: 0.60, biased: 0.30}
 
   trim_idle_vs_2500:
+    instructions_by_level: {L1: "Let the engine idle outside for a minute and note the fuel mixture number. Then hold a steady fast idle exactly as the app instructs and note it again. Extra air leaking in shows at idle and fades at higher speed.", L2: "Log total fuel correction at warm idle, then hold 2500 rpm steady and log again. Lean at idle that returns to normal at speed means unmetered air; lean at both means fuel delivery or airflow sensor.", L3: "Trim split idle vs 2500 rpm steady. Lean at idle only means vacuum leak; lean at both means fuel or airflow sensor."}
     kind: obd_procedure
     min_level: L1
     tools: []
@@ -105,6 +109,7 @@ tests:
       other: {lean_idle_normal_cruise: 0.22, lean_both: 0.23, normal: 0.40, rich: 0.15}
 
   visual_intake_boot:
+    instructions_by_level: {L1: "With the engine OFF and cool, open the hood and look closely at the big rubber tube between the air filter box and the engine. Feel along it for cracks, splits or loose clamps, and photograph anything odd.", L2: "Engine off and cool: inspect the intake boot and vacuum hoses past the airflow sensor for cracks, splits and loose clamps. Photograph any damage for the log.", L3: "Engine off: inspect intake tract past the airflow sensor plus vacuum lines. Photograph defects."}
     kind: visual
     min_level: L1
     tools: []
@@ -127,6 +132,7 @@ tests:
       other: {cracked_disconnected: 0.10, looks_ok: 0.60, inconclusive: 0.30}
 
   listen_fuel_pump_prime:
+    instructions_by_level: {L1: "Turn the key to ON without starting the engine and listen near the back seat for a short humming sound lasting a couple of seconds. That hum is the fuel pump. Note whether you hear it or not.", L2: "Key on, engine off: listen at the fuel filler for the 2-second pump prime. No prime plus a no-start points at fuel delivery.", L3: "Key on, engine off: confirm the 2-second pump prime is audible. No prime means fuel circuit fault."}
     kind: sensory
     min_level: L1
     tools: []
@@ -149,6 +155,7 @@ tests:
       other: {no_prime_no_start: 0.10, primes_normally: 0.65, weak_prime: 0.25}
 
   ect_warmup_curve:
+    instructions_by_level: {L1: "Start the cold engine outside and let it idle. Watch the temperature gauge on the app for about 15 minutes. If it levels off well below normal, the part that helps the engine warm up may be stuck open.", L2: "From a cold start, log coolant temperature out to its plateau, about 15 minutes of idle. A plateau stuck near 70 degrees with a P0128 code means the thermostat is stuck open.", L3: "Cold-start coolant curve to plateau. A low plateau near 70 degrees means stuck-open thermostat."}
     kind: obd_procedure
     min_level: L1
     tools: []
@@ -171,6 +178,7 @@ tests:
       other: {plateau_low: 0.10, plateau_normal: 0.60, inconclusive: 0.30}
 
   mode06_misfire_counts:
+    instructions_by_level: {L1: "This is a deeper check for a confident DIYer. The app reads the car's own misfire counters for each cylinder. A counter that keeps climbing points to the misfiring cylinder.", L2: "Read the on-board misfire counts per cylinder. Any cylinder at or above the threshold over the window counts as a misfiring cylinder.", L3: "Per-cylinder misfire counts vs threshold window."}
     kind: obd_read
     min_level: L2
     tools: []
@@ -193,6 +201,7 @@ tests:
       other: {misfire_cyl_n: 0.10, no_misfire: 0.70, inconclusive: 0.20}
 
   battery_voltage_rest_running:
+    instructions_by_level: {L1: "You need a multimeter for this one. With the engine OFF, touch the red lead to the battery plus terminal and the black lead to minus, and read the volts. Then start the engine and read again. The app shows the healthy ranges.", L2: "Multimeter across the battery terminals: rest voltage with the engine off, then running voltage. Rest below 12.4 or running outside 13.5 to 14.8 means a charging fault.", L3: "Meter: rest volts engine off plus running volts. Judge against physics.voltage bands."}
     kind: measurement
     min_level: L2
     tools: [multimeter]
@@ -215,6 +224,7 @@ tests:
       other: {low_rest: 0.15, low_running: 0.15, normal: 0.60, overcharging: 0.10}
 
   o2_response_check:
+    instructions_by_level: {L1: "With the engine fully warm and running outside, the app watches the oxygen sensor swing up and down. A sensor that barely moves is getting slow and may need replacement.", L2: "Warm engine at 2500 rpm: log the upstream oxygen sensor swings. It should cross the middle repeatedly between 0.1 and 0.9; a lazy or stuck line means a slow sensor.", L3: "Warm 2500 rpm: upstream sensor cross-counts across the midpoint. Lazy or stuck means replace."}
     kind: obd_procedure
     min_level: L2
     tools: []
@@ -237,6 +247,7 @@ tests:
       other: {switching_ok: 0.70, lazy_stuck: 0.30}
 
   smoke_intake_test:
+    instructions_by_level: {L1: "A shop blows harmless smoke into the air tube with a special machine and watches where it escapes, that is the leak. This needs a smoke machine most drivers do not own, so a repair shop usually does it.", L2: "With a smoke machine, fill the intake with smoke with the engine off and watch for escaping wisps. Escaping smoke confirms the leak; most DIYers hand this one to a shop.", L3: "Engine off: smoke-pressurise the intake tract. Escaping smoke confirms the leak."}
     kind: visual
     min_level: L3
     tools: ["smoke machine"]
@@ -259,6 +270,7 @@ tests:
       other: {leak_found: 0.10, no_leak: 0.70, inconclusive: 0.20}
 
   fuel_pressure_test:
+    instructions_by_level: {L1: "A mechanic connects a pressure gauge to the fuel line and reads the pressure with the key on. Low pressure means the engine is starved of fuel. Fuel work can be dangerous, so follow the safety checklist exactly.", L2: "Fuel pressure gauge on the rail test port: key-on plus idle pressure against the book spec, default 280 to 420. Relieve pressure exactly per the checklist first.", L3: "Rail pressure key-on and idle vs book spec. Low pressure means delivery fault."}
     kind: measurement
     min_level: L3
     tools: ["fuel pressure gauge"]
@@ -281,6 +293,7 @@ tests:
       other: {low_pressure: 0.10, normal_pressure: 0.70, inconclusive: 0.20}
 
   engine_sound_screen:
+    instructions_by_level: {L1: "Park outside with the brake on. Record a short sound clip of the running engine as the app shows. The app measures the sound pattern: a whistle that fades when revved hints at an air leak, a repeating stumble hints at a misfire.", L2: "Outdoors, brake set: record 5 to 8 seconds of engine sound at idle through the app, plus live engine speed and cylinder count. The sound check screens for misfire stumble, belt whistle and air-leak hiss.", L3: "44.1 kHz idle clip plus 2500 clip if hiss suspected, with live speed and cylinder count. Screened by dsp.engine_sound."}
     kind: sensory
     min_level: L1
     tools: []

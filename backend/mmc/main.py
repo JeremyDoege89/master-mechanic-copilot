@@ -1,12 +1,23 @@
 """MMC backend application. M4: sessions API + WebSocket state pushes."""
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 
 from mmc.api.routes import router
 from mmc.api.routes_uploads import router as uploads_router
 from mmc.api.routes_vision import router as vision_router
 
-app = FastAPI(title="Master Mechanic Copilot")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    from mmc import public as public_mod
+
+    public_mod.enforce_public_defaults()
+    yield
+
+
+app = FastAPI(title="Master Mechanic Copilot", lifespan=lifespan)
 app.include_router(router)
 app.include_router(vision_router)
 app.include_router(uploads_router)

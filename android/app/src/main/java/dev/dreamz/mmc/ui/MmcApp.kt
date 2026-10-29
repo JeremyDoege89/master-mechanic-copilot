@@ -128,6 +128,116 @@ class MmcController(context: Context, private val buildDefaultUrl: String) {
     /** Live adapter handle; set on connect/resume, null when not connected. */
     private var driver: Elm327Driver? = null
 
+    // -- M6 §1 tools questionnaire + §2 gate checkboxes ----------------------
+    // Served from GET /meta/levels when reachable; the SafetyGates defaults
+    // keep onboarding usable offline.
+    var toolOptions by mutableStateOf(SafetyGates.TOOL_OPTIONS)
+    var levelLabels by mutableStateOf(SafetyGates.LEVEL_LABELS)
+    var gateChecks by mutableStateOf(mapOf<String, Set<String>>())
+
+    // -- M6 §6 budget badge (read-only line, same numbers as the web badge).
+    var budgetLine by mutableStateOf("")
+
+    fun refreshBudget() {
+        bg {
+            try {
+                val body = client().getBudget()
+                val meta = body.optJSONObject("meta")
+                val baseten = body.optJSONObject("baseten")
+                val line = "Meta \$${meta?.optDouble("spend_usd")}/\$${meta?.optDouble("hard_stop_usd")}" +
+                    " · Baseten \$${baseten?.optDouble("spend_usd")}/\$${baseten?.optDouble("hard_stop_usd")}"
+                main.post { budgetLine = line }
+            } catch (_: Exception) {
+                main.post { budgetLine = "Budget unavailable offline." }
+            }
+        }
+    }
+
+    fun refreshLevels() {
+        bg {
+            try {
+                val meta = client().getLevels()
+                val levels = meta.optJSONObject("levels")
+                val toolsArr = meta.optJSONArray("tools")
+                main.post {
+                    if (levels != null) {
+                        levelLabels = mapOf(
+                            "L1" to levels.optString("L1", levelLabels["L1"] ?: "L1"),
+                            "L2" to levels.optString("L2", levelLabels["L2"] ?: "L2"),
+                            "L3" to levels.optString("L3", levelLabels["L3"] ?: "L3"),
+                        )
+                    }
+                    if (toolsArr != null && toolsArr.length() > 0) {
+                        toolOptions = List(toolsArr.length()) { i -> toolsArr.optString(i) }
+                    }
+                }
+            } catch (_: Exception) {
+                // Offline: keep the baked-in questionnaire.
+            }
+        }
+    }
+
+    /** State entry for [testRef], ranked first so acks resolve there. */
+    fun testEntry(testRef: String): JSONObject? {
+        val state = stateJson ?: return null
+        for (key in listOf("next_tests", "blocked_tests")) {
+            val arr = state.optJSONArray(key) ?: continue
+            for (i in 0 until arr.length()) {
+                val entry = arr.optJSONObject(i) ?: continue
+                if (entry.optString("kp_test_ref") == testRef) return entry
+            }
+        }
+        return null
+    }
+
+    fun gateForTest(testRef: String): String =
+        testEntry(testRef)?.optString("safety_gate").orEmpty()
+
+    /** Backend checklist for [testRef], or null when the test needs no gate. */
+    fun gateChecklistFor(testRef: String): SafetyGates.Checklist? {
+        val entry = testEntry(testRef) ?: return null
+        val gate = entry.optString("safety_gate")
+        val check = entry.optJSONObject("gate_checklist") ?: return SafetyGates.parse(gate, "", emptyList(), emptyList())
+        val items = check.optJSONArray("items") ?: return null
+        val extra = check.optJSONArray("l1_extra")
+        return SafetyGates.parse(
+            gate = gate,
+            title = check.optString("title"),
+            items = List(items.length()) { i -> items.optString(i) },
+            l1Extra = if (extra == null) emptyList() else List(extra.length()) { i -> extra.optString(i) },
+        )
+    }
+
+    fun gateItemsFor(testRef: String): List<String> {
+        val checklist = gateChecklistFor(testRef) ?: return emptyList()
+        return SafetyGates.displayItems(checklist, userLevel)
+    }
+
+    fun toggleGateItem(gate: String, item: String) {
+        val cur = gateChecks[gate].orEmpty()
+        gateChecks = gateChecks + (gate to if (item in cur) cur - item else cur + item)
+    }
+
+    /** True when [testRef] may run: no gate, or every box ticked. */
+    fun gateReady(testRef: String): Boolean {
+        val gate = gateForTest(testRef)
+        if (gate.isEmpty() || gate == "none") return true
+        val items = gateItemsFor(testRef)
+        if (items.isEmpty()) return false
+        return SafetyGates.allChecked(items, gateChecks[gate].orEmpty())
+    }
+
+    /** POST the safety_ack once every box is ticked. */
+    fun confirmGate(testRef: String) {
+        val gate = gateForTest(testRef)
+        if (gate.isEmpty() || gate == "none" || !gateReady(testRef)) return
+        if (testRef == "engine_sound_screen") {
+            confirmSoundGate()
+            return
+        }
+        ackGate(gate)
+    }
+
     val recorder = Recorder()
     private var socket: WebSocket? = null
 
@@ -154,6 +264,7 @@ class MmcController(context: Context, private val buildDefaultUrl: String) {
         prefs.edit().putString(BackendUrls.KEY_BACKEND_URL, urlField.trim()).apply()
         baseUrl = resolvedUrl()
         status = "Backend URL saved."
+        refreshLevels()
     }
 
     private fun client() = SessionClient(baseUrl)
@@ -310,6 +421,8 @@ class MmcController(context: Context, private val buildDefaultUrl: String) {
         activeTestRef = testRef
         manualOutcome = ""
         outcomeOptions = outcomeOptionsFor(testRef)
+        // Fresh tick-boxes per test run; the backend remembers the ack itself.
+        gateChecks = gateChecks - gateForTest(testRef)
         resultText = ""
         measuring = false
         measurePrompt = ""
@@ -741,6 +854,26 @@ class MmcController(context: Context, private val buildDefaultUrl: String) {
         return if (arr.length() > 0) arr.getJSONObject(0) else null
     }
 
+    /** Stop-and-see-a-pro banner text, or null when no trigger fired. */
+    fun proBanner(): String? =
+        stateJson?.optJSONObject("stop_and_see_pro")?.optString("banner")?.takeIf { it.isNotEmpty() }
+
+    fun stopTriggers(): List<String> {
+        val arr = stateJson?.optJSONObject("stop_and_see_pro")?.optJSONArray("triggers") ?: return emptyList()
+        return List(arr.length()) { i -> arr.optString(i) }
+    }
+
+    /** Blocked tests with their reasons — rendered, never hidden (M6 §1). */
+    fun blockedTests(): List<Pair<String, String>> {
+        val arr = stateJson?.optJSONArray("blocked_tests") ?: return emptyList()
+        return List(arr.length()) { i ->
+            val b = arr.getJSONObject(i)
+            val reasons = b.optJSONArray("blocked_reasons")
+            val text = if (reasons == null) "" else List(reasons.length()) { j -> reasons.optString(j) }.joinToString("; ")
+            b.optString("kp_test_ref") to text
+        }
+    }
+
     fun fetchReport() {
         val sid = sessionId ?: return
         bg {
@@ -851,14 +984,16 @@ private fun SettingsScreen(c: MmcController) {
         Button(onClick = { c.saveUrl() }) { Text("Save URL") }
         Button(onClick = { c.screen = Screen.TRANSPORT }) { Text("Next →") }
     }
-    Text("Level: ${c.userLevel}")
+    Text("Level: ${c.userLevel} — ${c.levelLabels[c.userLevel] ?: ""}")
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         for (level in listOf("L1", "L2", "L3")) {
             Button(onClick = { c.userLevel = level }) { Text(level) }
         }
     }
+    if (c.budgetLine.isNotEmpty()) Text(c.budgetLine)
+    Button(onClick = { c.refreshBudget() }) { Text("Refresh budget") }
     Text("Tools on hand (planner filters on these):")
-    for (tool in listOf("multimeter", "smoke machine", "fuel pressure gauge", "vacuum gauge")) {
+    for (tool in c.toolOptions) {
         Row(modifier = Modifier.selectable(
             selected = tool in c.tools,
             onClick = { if (tool in c.tools) c.tools.remove(tool) else c.tools.add(tool) },
@@ -909,8 +1044,13 @@ private fun LiveScreen(c: MmcController) {
     }
     Text(c.hypothesisHeader())
     Text(if (c.hasConcluded()) c.topHypothesis() else c.suspectLine())
+    c.proBanner()?.let { banner ->
+        Text("Stop — see a professional.")
+        Text(banner)
+        for (trigger in c.stopTriggers()) Text("• $trigger")
+    }
     val next = c.rankOneTest()
-    if (next != null) {
+    if (c.proBanner() == null && next != null) {
         Text("Next test: ${next.optString("kp_test_ref")}")
         Text(next.optString("why"))
         val gate = next.optString("safety_gate")
@@ -923,8 +1063,15 @@ private fun LiveScreen(c: MmcController) {
             Button(onClick = { c.fetchReport() }) { Text("Report") }
             Button(onClick = { c.screen = Screen.UPLOAD }) { Text("Upload") }
         }
-    } else {
+    } else if (c.proBanner() == null) {
         Text("No runnable tests — adjust level/tools in Settings.")
+    }
+    val blocked = c.blockedTests()
+    if (blocked.isNotEmpty()) {
+        Text("Blocked tests (not hidden — fix the reason to unlock):")
+        for ((ref, reasons) in blocked) {
+            Text("$ref — $reasons")
+        }
     }
 }
 
@@ -938,6 +1085,7 @@ private fun TestScreen(c: MmcController) {
         return
     }
     Text("Test: $ref")
+    SafetyGateCard(c, ref)
     Text(c.hypothesisHeader())
     Text(if (c.hasConcluded()) c.topHypothesis() else c.suspectLine())
     if (ref == "engine_sound_screen") {
@@ -978,14 +1126,53 @@ private fun ObdTestBody(c: MmcController, ref: String) {
             Text("Hold 2,500 rpm now… ${c.countdownSec}s", style = MaterialTheme.typography.titleMedium)
         }
         if (c.measurePrompt.isNotEmpty()) Text(c.measurePrompt)
-        Button(onClick = { c.captureIdleTrim() }, enabled = !c.measuring) {
+        Button(onClick = { c.captureIdleTrim() }, enabled = !c.measuring && c.gateReady(ref)) {
             Text("Capture idle, then cruise")
         }
     } else {
         Text("Reads live from the adapter: ${obdTestSummary(ref)}.")
         if (c.measurePrompt.isNotEmpty()) Text(c.measurePrompt)
-        Button(onClick = { c.measureAndSubmit(ref) }, enabled = !c.measuring) {
+        Button(onClick = { c.measureAndSubmit(ref) }, enabled = !c.measuring && c.gateReady(ref)) {
             Text(if (c.measuring) "Measuring…" else "Measure & submit")
+        }
+    }
+}
+
+/**
+ * One shared safety-gate card for every gated test (M6 §2): the engine-sound
+ * flow's bespoke confirm button generalised. Renders nothing for ungated
+ * tests. Run/Record below stay disabled until every box is ticked.
+ */
+@Composable
+private fun SafetyGateCard(c: MmcController, ref: String) {
+    val gate = c.gateForTest(ref)
+    if (gate.isEmpty() || gate == "none") return
+    val checklist = c.gateChecklistFor(ref)
+    val items = c.gateItemsFor(ref)
+    if (checklist == null || items.isEmpty()) {
+        Text("Safety gate: $gate (checklist unavailable offline)")
+        Button(onClick = { c.confirmGate(ref) }) { Text("Acknowledge safety: $gate") }
+        return
+    }
+    Text(checklist.title, style = MaterialTheme.typography.titleMedium)
+    val checked = c.gateChecks[gate].orEmpty()
+    for (item in items) {
+        Row(modifier = Modifier.selectable(
+            selected = item in checked,
+            onClick = { c.toggleGateItem(gate, item) },
+        )) {
+            RadioButton(selected = item in checked, onClick = { c.toggleGateItem(gate, item) })
+            Text(item, modifier = Modifier.padding(top = 12.dp))
+        }
+    }
+    if (ref == "engine_sound_screen" && c.soundGateAcked) {
+        Text("Safety confirmed: engine running, outdoors.")
+    } else {
+        Button(
+            onClick = { c.confirmGate(ref) },
+            enabled = SafetyGates.allChecked(items, checked),
+        ) {
+            Text("$gate — confirmed")
         }
     }
 }
@@ -993,15 +1180,6 @@ private fun ObdTestBody(c: MmcController, ref: String) {
 @Composable
 private fun EngineSoundBody(c: MmcController, ref: String) {
     val spec = dev.dreamz.mmc.audio.EngineSoundSpec
-    // Safety-gate checklist comes first: nothing records before this.
-    Text(spec.GATE_TEXT)
-    if (!c.soundGateAcked) {
-        Button(onClick = { c.confirmSoundGate() }) {
-            Text("Engine running outdoors — confirmed")
-        }
-    } else {
-        Text("Safety confirmed: engine running, outdoors.")
-    }
     // Plain mic explanation, then runtime permission only on tap.
     Text(spec.MIC_EXPLANATION)
     OutlinedTextField(
@@ -1065,7 +1243,7 @@ private fun ManualTestBody(c: MmcController, ref: String) {
     }
     Button(
         onClick = { c.submitManual(ref) },
-        enabled = !c.measuring && c.manualOutcome.isNotEmpty(),
+        enabled = !c.measuring && c.manualOutcome.isNotEmpty() && c.gateReady(ref),
     ) {
         Text(if (c.measuring) "Submitting…" else "Submit")
     }

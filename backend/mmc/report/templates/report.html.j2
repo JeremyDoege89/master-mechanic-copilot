@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Diagnostic report {{ report.report_id }}</title>
+<style>
+body { font-family: sans-serif; max-width: 60rem; margin: 2rem auto; padding: 0 1rem; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+th, td { border: 1px solid #999; padding: 0.4rem 0.6rem; text-align: left; vertical-align: top; }
+.badge { display: inline-block; border: 1px solid #333; border-radius: 0.4rem; padding: 0 0.4rem; font-size: 0.85em; }
+.ai { background: #fff3cd; }
+.dsp { background: #d4edda; }
+pre { white-space: pre-wrap; word-break: break-word; }
+@media print { body { margin: 0; } }
+</style>
+</head>
+<body>
+<h1>Diagnostic report</h1>
+<p>{{ report.conclusion }}</p>
+
+<h2>Summary by level</h2>
+<h3>L1 — driver</h3>
+<p>{{ report.summary_by_level.L1 }}</p>
+<h3>L2 — DIY</h3>
+<p>{{ report.summary_by_level.L2 }}</p>
+<h3>L3 — technician</h3>
+<p>{{ report.summary_by_level.L3 }}</p>
+
+<h2>Hypotheses</h2>
+<table>
+<tr><th>Suspect</th><th>Posterior</th></tr>
+{% for h in report.hypotheses_final %}
+<tr><td>{{ h.label.L1 }} ({{ h.hypothesis_id }})</td><td>{{ h.current }}</td></tr>
+{% endfor %}
+</table>
+
+<h2>Explanation trace</h2>
+{% for h in report.hypotheses_final %}
+<h3>{{ h.label.L1 }} ({{ h.hypothesis_id }})</h3>
+{% if h.trace %}
+<table>
+<tr><th>#</th><th>Test</th><th>Expected</th><th>Measured</th><th>LR</th><th>Source</th><th>What it means</th></tr>
+{% for t in h.trace %}
+<tr><td>{{ t.seq }}</td><td>{{ t.test_id }}</td><td>{{ t.expected }}</td><td>{{ t.measured }}</td><td>{{ t.likelihood_ratio }}</td><td>{{ t.lr_source }}</td><td>{{ t.text_L1 }}</td></tr>
+{% endfor %}
+</table>
+{% else %}
+<p>No updates yet.</p>
+{% endif %}
+{% endfor %}
+
+<h2>Expected vs measured</h2>
+<table>
+<tr><th>Test</th><th>Expected</th><th>Measured</th><th>Outcome</th><th>Evaluator</th><th>How judged</th></tr>
+{% for row in report.expected_vs_measured %}
+<tr>
+<td>{{ row.test_ref }}</td>
+<td>{{ row.expected }}</td>
+<td>{{ row.measured }}</td>
+<td>{{ row.outcome }}</td>
+<td>{{ row.evaluator }}</td>
+<td>{% if row.origin == "signal_processing" %}<span class="badge dsp">Signal processing (DSP), not AI</span>{% elif row.origin == "direct_observation" %}Direct observation{% else %}Deterministic ({{ row.evaluator }}){% endif %}</td>
+</tr>
+{% endfor %}
+</table>
+
+<h2>Evidence</h2>
+<table>
+<tr><th>ID</th><th>Type</th><th>Source</th></tr>
+{% for ev in report.evidence %}
+<tr><td>{{ ev.evidence_id }}</td><td>{{ ev.type }}</td><td>{% if ev.ai_extracted %}<span class="badge ai">AI-extracted ({{ ev.extractor }})</span>{% else %}{{ ev.extractor }}{% endif %}{% if ev.agreement %} · {{ ev.agreement }}{% endif %}</td></tr>
+{% endfor %}
+</table>
+{% if report.fallback_used %}
+<p><span class="badge ai">Second opinion / fallback used (Spark Open)</span></p>
+{% endif %}
+
+<h2>Safety notes</h2>
+<ul>
+{% for note in report.safety_notes %}
+<li>{{ note }}</li>
+{% endfor %}
+</ul>
+
+<h2>AI review — Muse Wonder (does not change the diagnosis)</h2>
+{% if report.wonder_review %}
+<p>{{ report.wonder_review.narrative }}</p>
+{% if report.wonder_review.gaps %}
+<ul>
+{% for gap in report.wonder_review.gaps %}
+<li>{{ gap.issue }}{% if gap.test_ref %} — suggested test: {{ gap.test_ref }}{% endif %}{% if gap.evidence_id %} — evidence: {{ gap.evidence_id }}{% endif %}{% if gap.rationale %} ({{ gap.rationale }}){% endif %}</li>
+{% endfor %}
+</ul>
+{% endif %}
+<p>Agrees with leading suspect: {{ report.wonder_review.agrees_with_top }}</p>
+{% else %}
+<p>AI review unavailable{% if report.wonder_unavailable %}: {{ report.wonder_unavailable }}{% endif %}.</p>
+{% endif %}
+
+<h2>Reproducibility</h2>
+<pre>engine {{ report.reproducibility.engine_version }} · KP {{ report.reproducibility.kp_version }} · prompts {{ report.reproducibility.prompts_sha256 }} · log {{ report.reproducibility.log_head_hash }} · models {{ report.reproducibility.model_pins }}</pre>
+{% if report.vin_last6 %}
+<p>Vehicle ····{{ report.vin_last6 }}</p>
+{% endif %}
+</body>
+</html>

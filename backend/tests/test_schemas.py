@@ -25,7 +25,7 @@ def _registry():
 
 def test_each_schema_validates_its_example():
     schema_files = sorted(glob.glob(str(SCHEMAS / "*.json")))
-    assert len(schema_files) == 15, f"expected 15 schemas, got {len(schema_files)}"
+    assert len(schema_files) == 16, f"expected 16 schemas, got {len(schema_files)}"
     registry = _registry()
     for schema_path in schema_files:
         name = Path(schema_path).stem
