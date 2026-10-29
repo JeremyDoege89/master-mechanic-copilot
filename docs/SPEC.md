@@ -105,7 +105,8 @@ Onboarding asks one question, then a tools checklist:
 | **Search grounding** (`web_search` tool on Spark) | TSB/known-issue lookups with citations, shown as low-weight "context" evidence | $2.50 per 1,000 queries [meta](https://dev.meta.ai/docs/pricing-rate-limits) |
 | **Muse Code** | Builds the whole repo from the spec | AGENTS.md conventions, `/plan` skill, parallel subagents [meta](https://dev.meta.ai/docs/muse-code/configuration) [meta](https://dev.meta.ai/docs/cookbook/bundled-skills) |
 | Muse Image | Leave it out of diagnosis (generated images could be mistaken for evidence). It could make onboarding illustrations at most. | Avoid looking like a gimmick |
-| Muse Glimmer / Spark Open | Post-hackathon on-device/offline explanations | Apache 2.0 open weights (Glimmer) [meta](https://dev.meta.ai/docs/overview) |
+| **Muse Spark Open** (`meta-models/muse-spark-open-1026` via Baseten) | Second-opinion vision (corroborates Spark 1.3 keyframes on agreement only, never probabilities) + fallback narration for text/image when the Meta API is over budget or 5xx; audio unavailable (Oct 29 probe: audio inputs carry no tokens) | Open weights over Chat Completions (`https://inference.baseten.co/v1`); ledger assumes $1.25 in / $4.25 out per 1M tokens with its own $80 hard stop; text ~3.3 s, image ~6.5 s live, so Spark 1.3 answers first and Open corroborates async |
+| Muse Glimmer | Post-hackathon on-device/offline explanations (use Muse Spark Open above for second opinions today) | Apache 2.0 open weights (Glimmer) [meta](https://dev.meta.ai/docs/overview) |
 
 **Muse Spark 1.3 audio caveat:** Meta's docs say audio understanding in Muse Spark 1.3 is "not fully supported." [meta](https://dev.meta.ai/docs/video-understanding) Route speech through Voice Transcribe, and send video to Spark for its visual content only.
 

@@ -160,6 +160,13 @@ def _direct(test: KpTest, measured: dict) -> tuple[str, dict]:
     return measured["outcome"], _expected("kp", f"kp:{test.ref}", measured["outcome"])
 
 
+def _engine_sound(test: KpTest, measured: dict) -> tuple[str, dict]:
+    # DSP-judged test: the outcome arrives discrete from the engine_sound
+    # analysis endpoint (stdlib DSP, no LLM). Membership in the KP outcome
+    # list is enforced by evaluate(); posteriors move only here.
+    return measured["outcome"], _expected("kp", f"kp:{test.ref}", measured["outcome"])
+
+
 _EVALUATORS = {
     "physics.trim_rpm_split": _trim,
     "physics.maf_expected": _maf,
@@ -172,4 +179,5 @@ _EVALUATORS = {
     "mode06.misfire": _mode06,
     "visual.direct": _direct,
     "sensory.direct": _direct,
+    "dsp.engine_sound": _engine_sound,
 }

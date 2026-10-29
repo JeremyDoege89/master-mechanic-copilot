@@ -1,0 +1,31 @@
+Read AGENTS.md (M6 and M7 milestones, API contracts, constraints), docs/SPEC.md (§3 personas and levels, key screens,
+§5 explanation trace and reproducibility, §8 safety/privacy, the report schema), docs/PLAN.md Days 4-5, docs/DECISIONS.md,
+docs/SAFETY.md, and the existing code: backend/mmc (report building so far, sessions, engine/trace, replay/mmrec,
+meta/ incl. spark_open and fallback), web/src (Replay.tsx, Report.tsx, HypothesisChart, SamOverlay, all stubs or thin)
+and the Android ui/. M0-M5, upload mode and Spark Open are done; build on them.
+
+Write .agents/plans/M6.md (under 160 lines) covering, in order:
+1. L1/L2/L3 text styles: one source of truth for level-adapted wording (KP labels/instructions_by_level, trace text_L1/
+   text_L3, Spark narration prompts with prompts/level_styles.md), tools questionnaire at session start, planner filters
+   already enforce tools/min_level - show blocked tests with their reasons. Acceptance: same session renders different
+   instructions for L1 vs L3.
+2. Safety gates as code end to end: every gated test shows its checklist first on Android and web; the clear-codes
+   flow (Mode 04 ClearToken, typed confirmation, readiness-monitor consequences text). Acceptance: gated tests show the
+   checklist before they can run.
+3. Report: backend/mmc/report/build.py + templates/report.html.j2 -> JSON, HTML and PDF (pick a PDF path that needs no
+   new heavy dependency, or justify one in DECISIONS), summary_by_level, explanation trace per hypothesis, expected-vs-
+   measured table with sources (kp/physics/manual_page citations), which evidence was AI-extracted, second-opinion
+   agreement, Spark Open fallback usage, SAM overlays, reproducibility block (model pins, kp/engine version, prompts
+   sha256, log head hash), truncated VIN. Muse Wonder review section (meta/wonder.py, one muse-wonder-1.0 call per report
+   at EFFORT_WONDER, schema-validated, clearly labelled "AI review", cached for replay, budget-guarded; it can flag gaps but
+   never changes posteriors).
+4. Web Replay + Report viewer (Vite/React/TS): load a .mmrec or a session id, scrub the timeline, hypothesis chart over
+   seq, next-test cards, SAM overlays on keyframes, evidence drawer, report page; judge mode that opens a bundled real
+   session with one click. With REPLAY_USE_CACHED_LLM=true it must make zero paid calls (assert it in a test).
+5. Deploy on Modal (the owner has $100 Modal credits; CLI installed, token pending): a modal app (modal_app.py) serving
+   the FastAPI backend + built web assets with a Modal Volume for DATA_DIR and bundled .mmrec fixtures, secrets via Modal
+   Secrets (MODEL_API_KEY, BASETEN_API_KEY) never in the repo, replay-only/judge mode by default so public traffic can't
+   spend credits, and a budget guard check at startup. Include the exact `modal deploy` command and a smoke test script.
+6. Budget guard visibility: a /budget endpoint and UI badge showing Meta and Baseten spend vs hard stops.
+Tests per acceptance item (offline), expected Meta spend, exact verification commands. Write only the plan file. End
+with a 5-line summary and any ambiguities resolved.

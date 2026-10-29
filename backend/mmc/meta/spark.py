@@ -137,6 +137,7 @@ def analyze_components(
     client: MetaClient,
     vehicle_context: str = "",
     mime: str = "image/jpeg",
+    open_client: Any = None,
 ) -> tuple[dict, dict]:
     """Spark scene understanding -> validated ``vision_components`` dict.
 
@@ -144,6 +145,10 @@ def analyze_components(
     (default ``medium`` for the <3 s keyframe->labels target). The effort
     is part of the cached/logged ``request`` record, so replays stay
     deterministic. Returns ``(parsed, key-free record)``.
+
+    M5O §3: with ``open_client`` (a ``SparkOpenClient``), a Meta
+    budget/error failure retries once on Spark Open; the record then
+    carries ``provider:"baseten"`` + the ``fallback`` marker.
     """
     user_text = (
         f"Vehicle context: {vehicle_context}\n"
@@ -158,17 +163,32 @@ def analyze_components(
         "image": _image_part(image_bytes, mime),
         "reasoning": {"effort": effort},
     }
-    result, record = client.call(
-        kind="llm_call",
-        model_key="spark",
-        request=request,
-        estimate_usd=estimate_spark(IMAGE_INPUT_TOKENS, JSON_OUTPUT_TOKENS),
-        response_kwargs={
-            "input": _live_input(COMPONENTS_SYSTEM, user_text, image_bytes, mime),
-            "reasoning": {"effort": effort},
-        },
+
+    def primary() -> tuple[dict, dict]:
+        result, record = client.call(
+            kind="llm_call",
+            model_key="spark",
+            request=request,
+            estimate_usd=estimate_spark(IMAGE_INPUT_TOKENS, JSON_OUTPUT_TOKENS),
+            response_kwargs={
+                "input": _live_input(COMPONENTS_SYSTEM, user_text, image_bytes, mime),
+                "reasoning": {"effort": effort},
+            },
+        )
+        return _validate("vision_components", result.output_text), record
+
+    if open_client is None:
+        return primary()
+    from mmc.meta import fallback as fallback_mod
+    from mmc.meta import spark_open as spark_open_mod
+
+    return fallback_mod.call_text_or_image(
+        primary,
+        lambda: spark_open_mod.analyze_components_open(
+            image_bytes, open_client, vehicle_context, mime
+        ),
+        kind="image",
     )
-    return _validate("vision_components", result.output_text), record
 
 
 def read_instrument(
@@ -176,11 +196,16 @@ def read_instrument(
     client: MetaClient,
     hint: str = "",
     mime: str = "image/jpeg",
+    open_client: Any = None,
 ) -> tuple[dict, dict]:
     """Spark meter reading -> validated ``vision_instrument`` dict.
 
     Extraction path: reasoning effort from ``EFFORT_SPARK_EXTRACT``
     (default ``high``). Part of the cached/logged ``request`` record.
+
+    M5O §3: with ``open_client``, a Meta budget/error failure retries
+    once on Spark Open (same <0.8 retake + user-confirm gates apply to
+    the fallback reading — it returns the identical validated shape).
     """
     user_text = f"What does this display read? {hint}".strip()
     effort = reasoning_effort("extract")
@@ -190,17 +215,36 @@ def read_instrument(
         "image": _image_part(image_bytes, mime),
         "reasoning": {"effort": effort},
     }
-    result, record = client.call(
-        kind="llm_call",
-        model_key="spark",
-        request=request,
-        estimate_usd=estimate_spark(IMAGE_INPUT_TOKENS, 100),
-        response_kwargs={
-            "input": _live_input(INSTRUMENT_SYSTEM, user_text, image_bytes, mime),
-            "reasoning": {"effort": effort},
-        },
-    )
-    return _validate("vision_instrument", result.output_text), record
+
+    def primary() -> tuple[dict, dict]:
+        result, record = client.call(
+            kind="llm_call",
+            model_key="spark",
+            request=request,
+            estimate_usd=estimate_spark(IMAGE_INPUT_TOKENS, 100),
+            response_kwargs={
+                "input": _live_input(INSTRUMENT_SYSTEM, user_text, image_bytes, mime),
+                "reasoning": {"effort": effort},
+            },
+        )
+        return _validate("vision_instrument", result.output_text), record
+
+    if open_client is None:
+        return primary()
+    from mmc.meta import fallback as fallback_mod
+
+    def open_read() -> tuple[dict, dict]:
+        import json as _json
+
+        result, record = open_client.chat_image(INSTRUMENT_SYSTEM, user_text, image_bytes, mime)
+        try:
+            data = _json.loads(result.output_text)
+        except ValueError as e:
+            raise ValueError(f"spark-open instrument: response is not JSON: {e}") from e
+        VALIDATORS["vision_instrument"].validate(data)
+        return data, record
+
+    return fallback_mod.call_text_or_image(primary, open_read, kind="image")
 
 
 def _live_input(system: str, user_text: str, image_bytes: bytes, mime: str) -> Any:

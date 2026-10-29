@@ -3,6 +3,10 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <!-- Engine-sound screen only: 5–8 s of 16-bit mono PCM at 44.1 kHz.
+         Requested at runtime when the user taps record, never at startup. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
     <application
         android:allowBackup="true"
         android:usesCleartextTraffic="${usesCleartext}"

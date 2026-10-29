@@ -1,0 +1,10 @@
+{
+  "audio_tokens": 0,
+  "available": false,
+  "kind": "llm_call",
+  "model": "meta-models/muse-spark-open-1026",
+  "note": "audio unavailable, recorded as data: Spark Open audio is unavailable (input_audio/audio_url carry no audio tokens); set SPARK_OPEN_AUDIO=true to experiment",
+  "probe": "audio",
+  "provider": "baseten",
+  "wav_bytes": 176444
+}

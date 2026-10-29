@@ -9,7 +9,7 @@ Build a multimodal vehicle-diagnosis copilot: Android app (live OBD2 via ELM327 
 ## Hard constraints (never violate)
 1. READ-ONLY vehicle access. The ELM driver must reject any request whose first byte is not in ALLOW = {01,02,03,05,06,07,09,0A}, plus 22 only when adapter_profile.mode22==true AND DID in config/mode22_allowlist.yaml. Mode 04 only with a single-use ClearToken issued by the clear-codes flow. Blocked always: 10,11,14,27,28,2E,2F,31,34,35,36,37,3D,85. Unit test required.
 2. Never send "AT TP A0"; use "ATSP0".
-3. All AI calls use Meta Model API, base URL https://api.meta.ai/v1, Standard-mode model IDs only (never "*-contributor"). Pin exact model IDs from env.
+3. All AI calls use Meta models: Meta Model API (`https://api.meta.ai/v1`, Standard IDs only) OR Meta open-weight models via Baseten (`MODEL_SPARK_OPEN` pin); pin exact IDs from env, never `*-contributor`, never non-Meta.
 4. The LLM never sets probabilities. Only engine/ code changes posteriors. LLM outputs must pass JSON Schema validation before use.
 5. Every state change is an appended event (hash-chained). No in-place mutation of session history.
 6. Safety gates are code, not prompt text. A test with safety_gate != none cannot be shown as runnable until the user confirms the gate checklist.
@@ -33,7 +33,7 @@ mmc/
       engine/ bayes.py planner.py evaluator.py physics.py trace.py stoprule.py
       kp/ loader.py  packs/ford_gen_v1.yaml generic_gas_v1.yaml
       agent/ orchestrator.py tools.py prompts/ system_v1.md level_styles.md
-      meta/ client.py spark.py sam.py voice.py wonder.py budget.py
+      meta/ client.py spark.py spark_open.py fallback.py sam.py voice.py wonder.py budget.py
       vision/ keyframes.py instruments.py components.py
       integrations/ vpic.py nhtsa.py
       report/ build.py templates/report.html.j2
@@ -63,6 +63,11 @@ MODEL_SPARK=muse-spark-1.3
 MODEL_WONDER=muse-wonder-1.0
 MODEL_SAM=sam-3.1
 MODEL_ASR=muse-voice-transcribe-1.0
+BASETEN_BASE_URL=https://inference.baseten.co/v1
+MODEL_SPARK_OPEN=meta-models/muse-spark-open-1026
+BASETEN_API_KEY=            # Baseten key (blank here; owner keeps it in ~/.config/baseten/api.env)
+BASETEN_BUDGET_USD_HARD_STOP=80
+SPARK_OPEN_AUDIO=false
 ASR_REALTIME_URL=wss://api.meta.ai/v1/asr/realtime
 BUDGET_USD_HARD_STOP=120   # backend refuses new paid calls past this (spend alerts do not stop billing)
 REPLAY_USE_CACHED_LLM=true
@@ -176,6 +181,7 @@ Hypotheses not mentioned in a test's likelihoods get a default uniform-over-outc
 ## Meta client rules (backend/mmc/meta)
 - Use the OpenAI Python SDK with base_url=META_BASE_URL and api_key=MODEL_API_KEY (Responses API).
 - spark.py: structured output with our JSON Schemas; tool calling for agent; log every request/response as llm_call event with sha256.
+- spark_open.py: sibling Baseten Chat Completions client (NOT a MetaClient subclass) for meta-models/muse-spark-open-1026; own $80 ledger (BASETEN_BUDGET_USD_HARD_STOP), cache under DATA_DIR/llm_cache/baseten, records carry provider:"baseten" + reasoning_content + latency_s. fallback.py retries text/image once on Spark Open after Meta budget/5xx (SAM/voice never fall back).
 - sam.py: Responses API on model sam-3.1, stream=true; ONE noun-phrase concept per request; support box/point prompt grammar; parse with meta_sam_parser (Python). Video via Files API upload; MP4/MOV H.264 only; transcode on device if needed.
 - voice.py: realtime WS proxy; keyword biasing list from KP component names.
 - wonder.py: report review only (one call per report).

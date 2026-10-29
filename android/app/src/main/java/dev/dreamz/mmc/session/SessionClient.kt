@@ -127,6 +127,45 @@ class SessionClient(baseUrl: String) {
     fun analyzeVideo(sessionId: String, blobRef: String): JSONObject =
         post("/sessions/$sessionId/uploads/video/analyze", JSONObject().put("blob_ref", blobRef))
 
+    /** Build (don't send) a generic blob upload request — pure, unit-tested. */
+    fun buildBlobRequest(
+        sessionId: String,
+        filename: String,
+        bytes: ByteArray,
+        mime: String,
+    ): Request {
+        val multipart = MultipartBody.Builder()
+            .setType(MultipartBody.FORM)
+            .addFormDataPart("file", filename, bytes.toRequestBody(mime.toMediaType()))
+            .build()
+        return Request.Builder().url("$base/sessions/$sessionId/blobs").post(multipart).build()
+    }
+
+    /** Upload raw bytes (engine-sound WAV) as a blob; returns {blob_ref, sha256}. */
+    fun uploadBlob(
+        sessionId: String,
+        filename: String,
+        bytes: ByteArray,
+        mime: String,
+    ): JSONObject = execute(buildBlobRequest(sessionId, filename, bytes, mime), "POST blobs")
+
+    /** Build (don't send) the engine-sound analysis body — pure JVM map, unit-tested. */
+    fun buildEngineSoundBody(blobRef: String, rpm: Double, cylinders: Int?): Map<String, Any> {
+        val body = mutableMapOf<String, Any>("blob_ref" to blobRef, "rpm" to rpm)
+        if (cylinders != null) body["cylinders"] = cylinders
+        return body
+    }
+
+    /** M5O engine sound: DSP screening of an uploaded WAV (no LLM call). */
+    fun analyzeEngineSound(
+        sessionId: String,
+        blobRef: String,
+        rpm: Double,
+        cylinders: Int?,
+    ): JSONObject =
+        post("/sessions/$sessionId/vision/engine-sound",
+            JSONObject(buildEngineSoundBody(blobRef, rpm, cylinders) as Map<*, *>))
+
     /** Upload a recorded .mmrec through store/blobs.py; returns the blob_ref. */
     fun uploadMmrec(sessionId: String, file: File): String {
         val multipart = MultipartBody.Builder()

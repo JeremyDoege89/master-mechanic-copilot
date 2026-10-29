@@ -36,6 +36,25 @@ SCHEMAS_DIR = Path(__file__).resolve().parents[2] / "packages" / "schemas"
 LEVELS = ("L1", "L2", "L3")
 MODES = ("live", "sim", "replay", "upload")
 
+# -- second-opinion views (M5O §2) -------------------------------------------
+# Async corroboration results keyed by session then evidence id. Display-only:
+# compute_state folds only test_result events, so posteriors are bit-identical
+# with or without these views. In-memory (single-process demo path); a fresh
+# keyframe call recomputes the merge deterministically.
+_VISION_SECOND_OPINIONS: dict[str, dict[str, dict]] = {}
+
+
+def note_vision_second_opinion(session_id: str, evidence_id: str, view: dict) -> None:
+    """Stash a merged second-opinion view for one keyframe's evidence."""
+    _VISION_SECOND_OPINIONS.setdefault(session_id, {})[evidence_id] = dict(view)
+
+
+def vision_second_opinions(session_id: str) -> list[dict]:
+    return [
+        {"evidence_id": eid, **view}
+        for eid, view in _VISION_SECOND_OPINIONS.get(session_id, {}).items()
+    ]
+
 
 def _schema_registry() -> Registry:
     pairs = []
@@ -307,6 +326,7 @@ def compute_state(session: Session) -> dict:
     return {
         "session_id": session.id,
         "vehicle": session.meta.get("vehicle"),
+        "vision_second_opinions": vision_second_opinions(session.id),
         "hypotheses": hypotheses,
         "next_tests": next_tests,
         "blocked_tests": [

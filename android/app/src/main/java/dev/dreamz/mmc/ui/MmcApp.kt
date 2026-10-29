@@ -315,6 +315,14 @@ class MmcController(context: Context, private val buildDefaultUrl: String) {
         measurePrompt = ""
         countdownSec = 0
         pendingIdleTrim = null
+        soundGateAcked = false
+        soundRecording = false
+        soundElapsedSec = 0
+        soundStatus = ""
+        soundOutcome = null
+        soundEvidenceId = null
+        soundRpm = null
+        soundBusy = false
         measuredField = if (showRawJson) measuredTemplate(testRef) else ""
         screen = Screen.TEST
     }
@@ -383,10 +391,14 @@ class MmcController(context: Context, private val buildDefaultUrl: String) {
         }
     }
 
-    private fun submitMeasuredNow(testRef: String, measured: JSONObject) {
+    private fun submitMeasuredNow(
+        testRef: String,
+        measured: JSONObject,
+        evidenceIds: List<String> = emptyList(),
+    ) {
         val sid = sessionId ?: error("no session")
         try {
-            val resp = client().postTestResult(sid, testRef, measured)
+            val resp = client().postTestResult(sid, testRef, measured, evidenceIds = evidenceIds)
             val outcome = resp.getJSONObject("test_result").optString("outcome")
             main.post {
                 measuredField = measured.toString(2)
@@ -486,6 +498,170 @@ class MmcController(context: Context, private val buildDefaultUrl: String) {
                     measurePrompt = ""
                     countdownSec = 0
                     status = "Measure failed: ${e.message}"
+                }
+            }
+        }
+    }
+
+    // -- engine-sound screen (M5O phone addition) ---------------------------
+    // Record button lives on the engine_sound_screen test card: 5–8 s of
+    // 16-bit mono PCM WAV at 44.1 kHz, uploaded with the live OBD rpm and
+    // the cylinder count, submitted through the normal test-result path.
+    // RECORD_AUDIO is requested only when the user taps record (the
+    // composable shows EngineSoundSpec.MIC_EXPLANATION first); the
+    // engine_running_outdoors checklist still comes first on the card.
+    var soundGateAcked by mutableStateOf(false)
+    var soundRecording by mutableStateOf(false)
+    var soundElapsedSec by mutableStateOf(0)
+    var soundStatus by mutableStateOf("")
+    var cylindersField by mutableStateOf("")
+    var soundOutcome by mutableStateOf<String?>(null)
+    var soundEvidenceId by mutableStateOf<String?>(null)
+    var soundRpm by mutableStateOf<Double?>(null)
+    var soundBusy by mutableStateOf(false)
+    private var soundRecorder: dev.dreamz.mmc.audio.EngineSoundRecorder? = null
+    private var soundWav: ByteArray? = null
+
+    fun hasRecordPermission(): Boolean =
+        appCtx.checkSelfPermission(dev.dreamz.mmc.audio.EngineSoundSpec.PERMISSION) ==
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+
+    /** Safety checklist first: the planner gate, confirmed on this card. */
+    fun confirmSoundGate() {
+        soundGateAcked = true
+        soundStatus = "Safety confirmed: engine running, outdoors."
+        ackGate("engine_running_outdoors")
+    }
+
+    fun startSoundCapture() {
+        if (!soundGateAcked) {
+            soundStatus = "Confirm the safety checklist first."
+            return
+        }
+        if (!hasRecordPermission()) {
+            soundStatus = "Microphone permission is needed for this test."
+            return
+        }
+        if (soundRecording) return
+        val rec = dev.dreamz.mmc.audio.EngineSoundRecorder()
+        try {
+            rec.start()
+        } catch (e: Exception) {
+            soundStatus = "Record failed: ${e.message}"
+            return
+        }
+        soundRecorder = rec
+        soundRecording = true
+        soundElapsedSec = 0
+        soundOutcome = null
+        soundEvidenceId = null
+        soundWav = null
+        soundStatus = "Recording engine sound…"
+        tickSoundClock()
+    }
+
+    private fun tickSoundClock() {
+        val rec = soundRecorder ?: return
+        if (!soundRecording) return
+        soundElapsedSec = rec.elapsedSec()
+        if (soundElapsedSec >= dev.dreamz.mmc.audio.EngineSoundSpec.MAX_SECONDS) {
+            stopSoundCapture()
+            return
+        }
+        main.postDelayed({ tickSoundClock() }, 1000)
+    }
+
+    fun stopSoundCapture() {
+        val rec = soundRecorder ?: return
+        soundRecorder = null
+        soundRecording = false
+        soundBusy = true
+        bg {
+            try {
+                val wav = rec.stop()
+                val rpm = try {
+                    readPidNow(0x0C)
+                } catch (e: Exception) {
+                    null
+                }
+                main.post {
+                    soundWav = wav
+                    soundRpm = rpm
+                    soundBusy = false
+                    soundStatus = if (rpm == null) {
+                        "Captured ${(wav.size - 44) / 2 / 44100}s, but no live rpm — reconnect the adapter."
+                    } else {
+                        "Captured ${(wav.size - 44) / 2 / 44100}s at ${"%.0f".format(rpm)} rpm — analyze it."
+                    }
+                }
+            } catch (e: Exception) {
+                main.post {
+                    soundBusy = false
+                    soundStatus = "Record failed: ${e.message}"
+                }
+            }
+        }
+    }
+
+    private fun soundCylinders(): Int? =
+        cylindersField.trim().toIntOrNull()?.takeIf { it in 2..16 }
+
+    /** Upload the WAV, run backend DSP, keep the outcome for explicit submit. */
+    fun analyzeSound() {
+        val wav = soundWav
+        val rpm = soundRpm
+        val sid = sessionId
+        if (wav == null || rpm == null || sid == null) {
+            soundStatus = "Record a clip with live rpm first."
+            return
+        }
+        soundBusy = true
+        soundStatus = "Uploading engine sound…"
+        bg {
+            try {
+                val c = client()
+                val up = c.uploadBlob(sid, "engine_sound.wav", wav, "audio/wav")
+                val analysis = c.analyzeEngineSound(
+                    sid, up.getString("blob_ref"), rpm, soundCylinders()
+                )
+                main.post {
+                    soundBusy = false
+                    soundOutcome = analysis.getString("outcome")
+                    soundEvidenceId = analysis.getString("evidence_id")
+                    soundStatus = "Heard: ${analysis.getString("outcome")} " +
+                        "(confidence ${analysis.optDouble("confidence", 0.0)}) — submit it."
+                }
+                postState(c.getState(sid))
+            } catch (e: Exception) {
+                main.post {
+                    soundBusy = false
+                    soundStatus = "Analyze failed: ${e.message}"
+                }
+            }
+        }
+    }
+
+    /** Submit the DSP outcome through the normal test-result path. */
+    fun submitSound(testRef: String) {
+        val outcome = soundOutcome
+        val evidence = soundEvidenceId
+        if (outcome.isNullOrEmpty() || evidence.isNullOrEmpty()) {
+            soundStatus = "Analyze the clip first."
+            return
+        }
+        measuring = true
+        bg {
+            try {
+                submitMeasuredNow(
+                    testRef,
+                    JSONObject().put("outcome", outcome),
+                    evidenceIds = listOf(evidence),
+                )
+                main.post { soundStatus = "Submitted: $outcome" }
+            } catch (e: Exception) {
+                main.post {
+                    measuring = false
+                    soundStatus = "Submit failed: ${e.message}"
                 }
             }
         }
@@ -764,7 +940,9 @@ private fun TestScreen(c: MmcController) {
     Text("Test: $ref")
     Text(c.hypothesisHeader())
     Text(if (c.hasConcluded()) c.topHypothesis() else c.suspectLine())
-    if (c.isObdTest(ref)) {
+    if (ref == "engine_sound_screen") {
+        EngineSoundBody(c, ref)
+    } else if (c.isObdTest(ref)) {
         ObdTestBody(c, ref)
     } else {
         ManualTestBody(c, ref)
@@ -809,6 +987,65 @@ private fun ObdTestBody(c: MmcController, ref: String) {
         Button(onClick = { c.measureAndSubmit(ref) }, enabled = !c.measuring) {
             Text(if (c.measuring) "Measuring…" else "Measure & submit")
         }
+    }
+}
+
+@Composable
+private fun EngineSoundBody(c: MmcController, ref: String) {
+    val spec = dev.dreamz.mmc.audio.EngineSoundSpec
+    // Safety-gate checklist comes first: nothing records before this.
+    Text(spec.GATE_TEXT)
+    if (!c.soundGateAcked) {
+        Button(onClick = { c.confirmSoundGate() }) {
+            Text("Engine running outdoors — confirmed")
+        }
+    } else {
+        Text("Safety confirmed: engine running, outdoors.")
+    }
+    // Plain mic explanation, then runtime permission only on tap.
+    Text(spec.MIC_EXPLANATION)
+    OutlinedTextField(
+        value = c.cylindersField,
+        onValueChange = { c.cylindersField = it.filter(Char::isDigit).take(2) },
+        label = { Text("Cylinders (blank = vehicle on file)") },
+        modifier = Modifier.fillMaxWidth(),
+        singleLine = true,
+    )
+    val permissionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) c.startSoundCapture()
+        else c.soundStatus = "Microphone permission is needed for this test."
+    }
+    if (c.soundRecording) {
+        Text("Recording… ${c.soundElapsedSec}s / ${spec.MAX_SECONDS}s")
+        Button(onClick = { c.stopSoundCapture() }) { Text("Stop") }
+    } else {
+        Button(
+            onClick = {
+                if (c.hasRecordPermission()) c.startSoundCapture()
+                else permissionLauncher.launch(spec.PERMISSION)
+            },
+            enabled = c.soundGateAcked && !c.soundBusy,
+        ) {
+            Text(if (c.soundBusy) "Working…" else "Record 5–8 s")
+        }
+    }
+    c.soundRpm?.let { Text("Engine speed: %.0f rpm".format(it)) }
+    if (c.soundStatus.isNotEmpty()) Text(c.soundStatus)
+    if (!c.soundRecording && c.soundOutcome == null && !c.soundBusy) {
+        // Analyze appears once a clip with live rpm is captured.
+        Button(
+            onClick = { c.analyzeSound() },
+            enabled = c.soundGateAcked,
+        ) { Text("Analyze clip") }
+    }
+    c.soundOutcome?.let { outcome ->
+        Text("Heard: $outcome")
+        Button(
+            onClick = { c.submitSound(ref) },
+            enabled = !c.measuring,
+        ) { Text(if (c.measuring) "Submitting…" else "Submit") }
     }
 }
 

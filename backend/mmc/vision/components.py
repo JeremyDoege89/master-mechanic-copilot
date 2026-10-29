@@ -76,6 +76,126 @@ def parse_components(raw: dict) -> dict:
     return raw
 
 
+# -- second opinion (M5O §2) -------------------------------------------------
+# Agreement only, never probabilities: the merge changes confidence display
+# (max when corroborated) plus agreement/sources labels. Posteriors move only
+# via test_result events, so compute_state numbers are bit-identical with or
+# without a second opinion.
+
+PRIMARY_SOURCE = "spark"
+SECOND_SOURCE = "spark_open"
+
+AGREEMENTS = ("corroborated", "single_source", "disputed")
+
+
+def _concept_slug(comp: dict) -> str:
+    return _slug(str(comp.get("sam_concept") or comp.get("name") or ""))
+
+
+def _anomaly_key(anom: dict) -> tuple[str, str]:
+    return (_slug(str(anom.get("type", ""))), _slug(str(anom.get("region_hint", ""))))
+
+
+def merge_opinions(primary: dict, second: dict | None) -> tuple[dict, list[dict]]:
+    """Merge two validated ``vision_components`` dicts on agreement.
+
+    Components key on the normalised ``sam_concept`` slug: named by both
+    sides → ``corroborated`` (confidence is the max); named by one side
+    only → ``single_source``. Anomalies key on (type, region) slugs: an
+    entry sharing a region slug with a different-typed entry on the other
+    side → ``disputed``.
+
+    Returns ``(merged, disagreements)`` where ``merged`` carries per-entry
+    ``agreement`` + ``sources`` and ``disagreements`` is
+    ``[{name, named_by}]`` for one-side-only components. ``second=None``
+    (disabled/timed-out Open) marks every primary entry single-source.
+    """
+    prim_comps = list(primary.get("components", []))
+    sec_comps = list((second or {}).get("components", []))
+    sec_by_slug: dict[str, dict] = {}
+    for comp in sec_comps:
+        sec_by_slug.setdefault(_concept_slug(comp), comp)
+    merged_comps: list[dict] = []
+    disagreements: list[dict] = []
+    for comp in prim_comps:
+        slug = _concept_slug(comp)
+        other = sec_by_slug.pop(slug, None)
+        entry = dict(comp)
+        if other is not None:
+            entry["confidence"] = max(float(comp["confidence"]), float(other["confidence"]))
+            entry["agreement"] = "corroborated"
+            entry["sources"] = [PRIMARY_SOURCE, SECOND_SOURCE]
+        else:
+            entry["agreement"] = "single_source"
+            entry["sources"] = [PRIMARY_SOURCE]
+            disagreements.append({"name": str(comp.get("name", "")), "named_by": PRIMARY_SOURCE})
+        merged_comps.append(entry)
+    for slug, comp in sec_by_slug.items():
+        entry = dict(comp)
+        entry["agreement"] = "single_source"
+        entry["sources"] = [SECOND_SOURCE]
+        merged_comps.append(entry)
+        disagreements.append({"name": str(comp.get("name", "")), "named_by": SECOND_SOURCE})
+
+    prim_anoms = list(primary.get("anomalies", []))
+    sec_anoms = list((second or {}).get("anomalies", []))
+    sec_by_key: dict[tuple[str, str], dict] = {}
+    for anom in sec_anoms:
+        sec_by_key.setdefault(_anomaly_key(anom), anom)
+    sec_regions: dict[str, list[dict]] = {}
+    for anom in sec_anoms:
+        sec_regions.setdefault(_anomaly_key(anom)[1], []).append(anom)
+    prim_regions: dict[str, list[dict]] = {}
+    for anom in prim_anoms:
+        prim_regions.setdefault(_anomaly_key(anom)[1], []).append(anom)
+    merged_anoms: list[dict] = []
+    for anom in prim_anoms:
+        key = _anomaly_key(anom)
+        other = sec_by_key.pop(key, None)
+        entry = dict(anom)
+        if other is not None:
+            entry["confidence"] = max(float(anom["confidence"]), float(other["confidence"]))
+            entry["agreement"] = "corroborated"
+            entry["sources"] = [PRIMARY_SOURCE, SECOND_SOURCE]
+        elif any(
+            _anomaly_key(o)[0] != key[0] for o in sec_regions.get(key[1], []) if key[1]
+        ):
+            entry["agreement"] = "disputed"
+            entry["sources"] = [PRIMARY_SOURCE]
+        else:
+            entry["agreement"] = "single_source"
+            entry["sources"] = [PRIMARY_SOURCE]
+        merged_anoms.append(entry)
+    for key, anom in sec_by_key.items():
+        entry = dict(anom)
+        if any(_anomaly_key(o)[0] != key[0] for o in prim_regions.get(key[1], []) if key[1]):
+            entry["agreement"] = "disputed"
+        else:
+            entry["agreement"] = "single_source"
+        entry["sources"] = [SECOND_SOURCE]
+        merged_anoms.append(entry)
+    return (
+        {"components": merged_comps, "anomalies": merged_anoms},
+        disagreements,
+    )
+
+
+def _single_source(parsed: dict, source: str = PRIMARY_SOURCE) -> dict:
+    """Label every entry of one opinion ``single_source`` (Open unavailable)."""
+    out = {"components": [], "anomalies": []}
+    for comp in parsed.get("components", []):
+        entry = dict(comp)
+        entry["agreement"] = "single_source"
+        entry["sources"] = [source]
+        out["components"].append(entry)
+    for anom in parsed.get("anomalies", []):
+        entry = dict(anom)
+        entry["agreement"] = "single_source"
+        entry["sources"] = [source]
+        out["anomalies"].append(entry)
+    return out
+
+
 def to_observations(parsed: dict, evidence_id: str) -> list[dict]:
     """Map validated components/anomalies to ``observation``-schema dicts.
 
@@ -87,27 +207,31 @@ def to_observations(parsed: dict, evidence_id: str) -> list[dict]:
     ts = datetime.now(timezone.utc).isoformat()
     observations: list[dict] = []
     for comp in parsed.get("components", []):
-        observations.append(
-            {
-                "observation_id": uuid.uuid4().hex,
-                "feature": f"visual_component:{_slug(comp['name'])}",
-                "value": 1.0,
-                "confidence": float(comp["confidence"]),
-                "extractor": EXTRACTOR,
-                "evidence_ids": [evidence_id],
-                "ts": ts,
-            }
-        )
+        obs = {
+            "observation_id": uuid.uuid4().hex,
+            "feature": f"visual_component:{_slug(comp['name'])}",
+            "value": 1.0,
+            "confidence": float(comp["confidence"]),
+            "extractor": EXTRACTOR,
+            "evidence_ids": [evidence_id],
+            "ts": ts,
+        }
+        if comp.get("agreement") in AGREEMENTS:
+            obs["agreement"] = comp["agreement"]
+            obs["sources"] = list(comp.get("sources") or [])
+        observations.append(obs)
     for anom in parsed.get("anomalies", []):
-        observations.append(
-            {
-                "observation_id": uuid.uuid4().hex,
-                "feature": f"visual_anomaly:{anom['type']}",
-                "value": anom.get("region_hint", ""),
-                "confidence": float(anom["confidence"]),
-                "extractor": EXTRACTOR,
-                "evidence_ids": [evidence_id],
-                "ts": ts,
-            }
-        )
+        obs = {
+            "observation_id": uuid.uuid4().hex,
+            "feature": f"visual_anomaly:{anom['type']}",
+            "value": anom.get("region_hint", ""),
+            "confidence": float(anom["confidence"]),
+            "extractor": EXTRACTOR,
+            "evidence_ids": [evidence_id],
+            "ts": ts,
+        }
+        if anom.get("agreement") in AGREEMENTS:
+            obs["agreement"] = anom["agreement"]
+            obs["sources"] = list(anom.get("sources") or [])
+        observations.append(obs)
     return observations

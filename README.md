@@ -7,6 +7,11 @@ suspect rose or fell, and produces a hash-chained, replayable report.
 Built for the Meta AI Developer Hackathon (Indie track) with Muse Code, Muse Spark 1.3, SAM 3.1 and Muse Voice
 Transcribe.
 
+Meta model paths: Muse Spark 1.3 / SAM 3.1 / Voice Transcribe via the Meta Model API (`https://api.meta.ai/v1`,
+Standard IDs from env), plus Muse Spark Open (`meta-models/muse-spark-open-1026`) via Baseten
+(`https://inference.baseten.co/v1`) for second-opinion vision and text/image fallback (own $80 ledger; audio
+unavailable — engine sound is stdlib DSP, never an LLM call).
+
 **Status:** in development (Oct 26 – Nov 4, 2026). Setup, run and judge instructions will land here and in
 `docs/JUDGES.md` as the build progresses.
 

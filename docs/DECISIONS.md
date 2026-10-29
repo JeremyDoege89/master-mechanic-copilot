@@ -2,6 +2,85 @@
 
 Newest first. Each entry: date, decision, why. Add one whenever scope, a dependency or an architecture choice changes.
 
+## 2026-10-29 — M5O (Spark Open second opinion + fallback + engine-sound DSP) + phone recorder
+
+- Sibling client, not subclass: `MetaClient` is Responses-shaped while
+  Spark Open is Chat Completions, so `backend/mmc/meta/spark_open.py`
+  (`SparkOpenClient`) reuses helpers (`canonical_bytes`/`request_sha256`/
+  `call_record`/`_redact`), `BudgetTracker`, lazy `openai` import and the
+  offline `transport` seam instead of inheriting. Pin is exactly
+  `meta-models/muse-spark-open-1026` (contributor/non-Meta IDs refused);
+  key `BASETEN_API_KEY`, base `BASETEN_BASE_URL`. Own $80 ledger
+  (`BASETEN_BUDGET_USD_HARD_STOP`, Meta's $120 tracker untouched);
+  assumed $1.25/M in / $4.25/M out with cached tokens billed at the full
+  input rate until Baseten documents otherwise (`budget.estimate_spark_open`
+  + `provider="baseten"` branch in `actual_cost_from_usage`, mapping
+  `prompt/completion_tokens` + reasoning/cached detail blocks; reasoning
+  rides inside completion, never double-billed). Cache under
+  `DATA_DIR/llm_cache/baseten`; replay hit $0, miss raises
+  `NoCachedResponse`. Records carry `provider:"baseten"`, full
+  `reasoning_content`, mapped usage, `cost_usd`, `latency_s`, appended via
+  the existing `llm_call` event. Covered by `tests/test_spark_open.py`.
+- Second-opinion vision merges on agreement only: `analyze_components_open`
+  reuses `COMPONENTS_SYSTEM` + `vision_components` validation +
+  `BANNED_KEYS`; `components.merge_opinions` keys on the normalised
+  `sam_concept` slug (both→`corroborated` at max confidence, one
+  side→`single_source`, same-region conflicting anomaly→`disputed`) with
+  `disagreements:[{name, named_by}]`. `observation.json` gains optional
+  `agreement`/`sources`; `compute_state` still folds only `test_result`,
+  so posteriors are bit-identical (asserted). Latency: Spark 1.3 ships
+  inside the 3 s sync budget with `second_opinion_pending:true` and the
+  merge lands later via `on_second_opinion` (noted into state as
+  `vision_second_opinions`, WS push on the existing socket); 10 s
+  per-model timeout, Open timeout→`single_source`, labels never blocked.
+  SAM overlays stay on the served primary concepts. Covered by
+  `tests/test_second_opinion.py`.
+- Resilience fallback (`meta/fallback.py::call_text_or_image`, text+image
+  only) fires once on `BudgetExceeded`/`MetaClientError` post-429-retries;
+  the record carries `fallback:{from:"meta", reason, detail≤200}`. Wired
+  into `spark.analyze_components`/`read_instrument` (optional
+  `open_client`; one shared $80 ledger per analyzer for fallback +
+  second opinion) — no agent module exists yet, so agent turns wire up
+  when it lands. SAM streaming/parser and voice (no `meta/voice.py`, no
+  substitute) never fall back (import-graph test). Covered by
+  `tests/test_fallback.py`.
+- Engine sound is stdlib DSP, never an LLM call (`mmc/vision/
+  engine_sound.py`: `wave`/`array`/`math` Goertzel bins, no numpy — no new
+  dependency, so no AGENTS.md §8 dep note). WAV 3–10 s (stereo→mono,
+  native rate) + live rpm + cylinders (explicit, else parsed from
+  `vehicle.engine`; missing→`inconclusive`, never guessed) feeds
+  firing-dropout (envelope autocorrelation at `f_fire=(rpm/60)*(cyl/2)`),
+  2–6 kHz narrowband squeal (peak/median + 1 s persistence), and 4–8 kHz
+  hiss (band ratio + flatness, idle/2500 pair when supplied, else
+  idle-only flagged). One KP test `engine_sound_screen`
+  (sensory/L1/`engine_running_outdoors`, `dsp.engine_sound`, no cell
+  >0.75) in both packs; posteriors move only via the normal test-result
+  route (asserted end-to-end: hiss clip → `vacuum_hiss` →
+  `vacuum_leak_post_maf` top). `evidence.json` gains type `audio`; new
+  endpoint `POST .../vision/engine-sound`. Audio probe confirmed Spark
+  Open carries no audio tokens, so `chat_audio()` stays a stub
+  (`NotImplementedError` even with `SPARK_OPEN_AUDIO=true` until Baseten
+  confirms a shape). Covered by `tests/test_engine_sound.py`.
+- Owner runs `scripts/spike_spark_open.py` outside the sandbox (key from
+  `~/.config/baseten/api.env`, never printed); fixtures replay at $0
+  (`tests/test_m5o_docs.py` skips until they exist). Live cost <$2 of the
+  $100 credit; CI $0.
+- Phone recorder for `engine_sound_screen`: `audio/EngineSoundRecorder`
+  (AudioRecord, fixed 44.1 kHz mono 16-bit — the squeal band reaches
+  6 kHz — 5–8 s with auto-stop, pure `WavWriter` for WAV) behind a record
+  button on that test's card. Safety checklist
+  (`engine_running_outdoors`) first, then the plain mic explanation, then
+  runtime `RECORD_AUDIO` only on tap; the clip uploads with the live OBD
+  rpm + cylinder count (blank = vehicle on file) and submits through the
+  normal result path with its evidence id. Covered by `WavWriterTest`,
+  `EngineSoundSpecTest`, `SessionClientSoundTest` (builders return pure
+  maps — JVM unit tests cannot touch Android's `org.json` stubs).
+- Sandbox note: `~/.gradle` is read-only under the file policy, so
+  Android verified with a writable `GRADLE_USER_HOME` at
+  `/tmp/mmc-gradle-home` seeded by copying `~/.gradle/caches` (+
+  `gradle.properties`), driving the extracted Gradle 8.10.2 binary
+  directly with `--offline`.
+
 ## 2026-10-29 — SAM video cost fix + per-call reasoning effort
 
 - Cost bug: SAM video usage reports `video_frames_processed: 75` (no

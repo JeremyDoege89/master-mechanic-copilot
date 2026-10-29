@@ -111,4 +111,20 @@ tests:
       healthy: {plateau_low: 0.02, plateau_normal: 0.88, inconclusive: 0.10}
       other: {plateau_low: 0.10, plateau_normal: 0.60, inconclusive: 0.30}
 
+  engine_sound_screen:
+    kind: sensory
+    min_level: L1
+    tools: []
+    minutes: 3
+    risk: 0
+    safety_gate: engine_running_outdoors
+    outcomes: [misfire_dropout, belt_bearing_tone, vacuum_hiss, normal, inconclusive]
+    evaluator: dsp.engine_sound
+    likelihoods:
+      vacuum_leak_post_maf: {misfire_dropout: 0.05, belt_bearing_tone: 0.05, vacuum_hiss: 0.65, normal: 0.20, inconclusive: 0.05}
+      maf_contaminated: {misfire_dropout: 0.05, belt_bearing_tone: 0.05, vacuum_hiss: 0.10, normal: 0.70, inconclusive: 0.10}
+      ignition_misfire_cyl: {misfire_dropout: 0.75, belt_bearing_tone: 0.03, vacuum_hiss: 0.02, normal: 0.10, inconclusive: 0.10}
+      healthy: {misfire_dropout: 0.03, belt_bearing_tone: 0.05, vacuum_hiss: 0.07, normal: 0.75, inconclusive: 0.10}
+      other: {misfire_dropout: 0.15, belt_bearing_tone: 0.15, vacuum_hiss: 0.15, normal: 0.40, inconclusive: 0.15}
+
 dependency_groups: [[stft_b1, ltft_b1]]

@@ -1,0 +1,12 @@
+The plan in .agents/plans/M5O.md is approved, with one addition: the phone has to record the engine sound. Add an
+Android recorder for the `engine_sound_screen` test: a record button on that test's card that captures 5-8 s of
+16-bit mono PCM WAV at 44.1 kHz (AudioRecord; the squeal band reaches 6 kHz, so no low sample rates), uploads it as a
+blob with the current OBD rpm and the vehicle's cylinder count, and submits it through the normal test result path.
+It needs RECORD_AUDIO, requested at runtime only when the user taps record, with a plain explanation; the safety-gate
+checklist (engine running, outdoors) still comes first.
+
+A Wonder review of M5/M5U is running in parallel and only writes .agents/reviews/M5-M5U.md; don't wait for it or
+touch that file. Implement the plan in its order, each step with its test before the next. Keep all existing tests
+green. Run the plan's verification commands except the owner spike (backend via .venv/bin/python -m pytest -q;
+Android offline with GRADLE_USER_HOME seeded from ~/.gradle), fix failures until they pass, add a dated
+docs/DECISIONS.md entry, and do not commit. Finish with files created/changed, test counts and pass/fail.

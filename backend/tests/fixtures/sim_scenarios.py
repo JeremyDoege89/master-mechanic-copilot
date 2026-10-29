@@ -160,6 +160,14 @@ def measured_for_test(scenario: str, test_ref: str) -> dict:
         return {"outcome": "leak_found" if scenario == "vacuum_leak" else "no_leak"}
     if test_ref == "fuel_pressure_test":
         return {"fuel_kpa": 150.0 if scenario == "fuel_fuse_removed" else 350.0}
+    if test_ref == "engine_sound_screen":
+        # M5O DSP screening: a dead cylinder drops firing pulses, a vacuum
+        # leak hisses at idle, a no-start engine yields no usable clip.
+        return {"outcome": {
+            "coil_unplugged": "misfire_dropout",
+            "vacuum_leak": "vacuum_hiss",
+            "fuel_fuse_removed": "inconclusive",
+        }.get(scenario, "normal")}
     raise KeyError(f"fixture has no measured payload for test {test_ref!r}")
 
 

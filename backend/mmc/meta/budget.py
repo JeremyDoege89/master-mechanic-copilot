@@ -37,6 +37,18 @@ def estimate_spark(input_tokens: int, output_tokens: int, cached_tokens: int = 0
     )
 
 
+def estimate_spark_open(input_tokens: int, output_tokens: int, cached_tokens: int = 0) -> float:
+    """Pre-call estimate for Spark Open via Baseten (Chat Completions).
+
+    Same $1.25/M in / $4.25/M out ledger as Spark. Cached tokens bill at
+    the full input rate until Baseten documents otherwise (see DECISIONS).
+    """
+    return (
+        max(0, input_tokens) / 1e6 * SPARK_INPUT_PER_MTOK
+        + max(0, output_tokens) / 1e6 * SPARK_OUTPUT_PER_MTOK
+    )
+
+
 def estimate_sam_images(n: int) -> float:
     return max(0, n) / 1000.0 * SAM_IMAGE_PER_1K
 
@@ -49,7 +61,7 @@ def estimate_asr(seconds: float) -> float:
     return max(0.0, seconds) / 3600.0 * ASR_PER_HOUR
 
 
-def actual_cost_from_usage(model: str, usage: dict) -> float:
+def actual_cost_from_usage(model: str, usage: dict, provider: str = "meta") -> float:
     """Cost from the usage block the API returned (never from estimates).
 
     ``usage`` is the ``response.usage`` mapping: ``input_tokens``,
@@ -58,7 +70,25 @@ def actual_cost_from_usage(model: str, usage: dict) -> float:
     new model ID fails open on accounting, never on the spend guard: the
     guard always runs on the pre-call estimate.
     """
-    model = (model or "").lower()
+    model_l = (model or "").lower()
+    if provider == "baseten" or "muse-spark-open" in model_l:
+        # Baseten Chat Completions usage: prompt_tokens / completion_tokens
+        # plus completion_tokens_details.reasoning_tokens and
+        # prompt_tokens_details.cached_tokens. Reasoning tokens ride inside
+        # completion_tokens (same output rate, never double-billed); cached
+        # tokens bill at the full input rate until Baseten says otherwise.
+        prompt = int(usage.get("prompt_tokens", 0) or 0)
+        completion = int(usage.get("completion_tokens", 0) or 0)
+        if prompt == 0 and completion == 0:
+            # Tolerate Responses-style keys on the same path.
+            details = usage.get("input_tokens_details") or {}
+            return estimate_spark_open(
+                int(usage.get("input_tokens", 0) or 0),
+                int(usage.get("output_tokens", 0) or 0),
+                int(details.get("cached_tokens", 0) or 0),
+            )
+        return estimate_spark_open(prompt, completion)
+    model = model_l
     if "wonder" in model:
         return (
             int(usage.get("input_tokens", 0)) / 1e6 * WONDER_INPUT_PER_MTOK
