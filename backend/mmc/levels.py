@@ -97,7 +97,12 @@ def instruction(instructions: dict, level: str) -> str:
 
 def verbal_band(p: float) -> str:
     """Verbal band + natural frequency (SPEC §3), e.g. 'Likely (about 6 in 10)'."""
-    n = max(0, min(10, int(round(float(p) * 10))))
+    # Finding #12: round half up, not Python banker's rounding (which sent
+    # 0.85 to "8 in 10" against the adjacent band). The 1e-9 epsilon keeps
+    # float artefacts such as 0.85*10 == 8.499999999999998 on the right side.
+    import math
+
+    n = max(0, min(10, int(math.floor(float(p) * 10 + 0.5 + 1e-9))))
     if p >= 0.85:
         band = "Very likely"
     elif p >= 0.6:
@@ -109,6 +114,57 @@ def verbal_band(p: float) -> str:
     else:
         band = "Very unlikely"
     return f"{band} (about {n} in 10)"
+
+
+# Finding #12: plain-language L1 paraphrases for every KP outcome slug,
+# so generated trace text never leaks jargon (e.g. 'p030n') that the
+# loader denylist cannot see. Unknown slugs fall back to "the test
+# result" — never the raw slug. Every phrase is check_l1-clean.
+OUTCOME_L1 = {
+    "p0102": "the airflow reading dropping out",
+    "p0113": "the intake temperature reading stuck impossibly cold",
+    "p0128": "the engine staying too cool",
+    "p030n": "one cylinder misfiring",
+    "none": "no fault showing up",
+    "other_codes": "a different fault showing up",
+    "reads_zero": "the reading dropping to zero",
+    "under_reports": "the reading coming in low",
+    "plausible": "a believable reading",
+    "over_reports": "the reading coming in high",
+    "minus40": "the temperature stuck impossibly cold",
+    "biased": "the reading shifted off",
+    "lean_idle_normal_cruise": "the engine running lean at idle but fine when revved",
+    "lean_both": "the engine running lean at idle and when revved",
+    "normal": "a normal result",
+    "rich": "the engine running rich",
+    "cracked_disconnected": "a cracked or loose part",
+    "looks_ok": "everything looking fine",
+    "inconclusive": "an unclear result",
+    "no_prime_no_start": "no fuel sound and no start",
+    "primes_normally": "the normal priming sound",
+    "weak_prime": "a weak priming sound",
+    "plateau_low": "the temperature levelling off too low",
+    "plateau_normal": "the temperature warming up normally",
+    "misfire_cyl_n": "one cylinder misfiring",
+    "no_misfire": "no misfire showing up",
+    "low_rest": "low voltage with the engine off",
+    "low_running": "low voltage with the engine running",
+    "overcharging": "voltage reading high",
+    "switching_ok": "the sensor switching normally",
+    "lazy_stuck": "the sensor responding slowly",
+    "leak_found": "a leak found",
+    "no_leak": "no leak found",
+    "low_pressure": "pressure reading low",
+    "normal_pressure": "pressure reading normal",
+    "misfire_dropout": "a stumble in the engine sound",
+    "belt_bearing_tone": "a whine from a belt or pulley",
+    "vacuum_hiss": "a hissing sound",
+}
+
+
+def outcome_l1(outcome: str) -> str:
+    """Plain-language L1 phrase for a KP outcome slug (never the slug)."""
+    return OUTCOME_L1.get(outcome, "the test result")
 
 
 def trace_text(
@@ -123,7 +179,7 @@ def trace_text(
     band = verbal_band(posterior)
     return {
         "L1": (
-            f"{_by_level(label, 'L1')}: the {outcome!r} result makes this "
+            f"{_by_level(label, 'L1')}: {outcome_l1(outcome)} makes this "
             f"{direction} \u2014 {band}."
         ),
         "L2": (

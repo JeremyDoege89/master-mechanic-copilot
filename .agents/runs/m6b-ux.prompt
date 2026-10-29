@@ -1,0 +1,26 @@
+UX pass on the live judge site (web/src and backend/mmc/report/templates/ ONLY; a parallel job owns backend/ and
+android/). Screenshots from the live site are in /tmp/mmc-shots/ (landing-1440.png, landing-phone.png, mid.png,
+drawer.png, report.png); look at them. It works, but it reads as a developer tool. Fix:
+1. Report dead end: the Report tab shows a "Report id" box and "No report loaded". In judge mode and whenever a session
+   is loaded, the Report tab must open that session's latest report automatically (the bundles contain report_built
+   with the Wonder review); "Build report" on the card should jump to it. The last JUDGES.md step must work in one click.
+2. Human labels everywhere: timeline rows show raw event types and hashes ("evidence_added e93db2bc"). Render a short
+   plain-language line per event from its payload (e.g. "Read fault codes: none stored", "Fuel trims: +18% at idle, +4%
+   at 2,500 rpm", "Safety check done: engine running outdoors", "Air leak suspect 26% -> 61%"), with the raw type as a
+   small secondary label. Test cards use the KP test's level label as the title, raw ref small.
+3. Payoff moment: when the top hypothesis crosses 0.8, show a conclusion banner ("Most likely: Air leak after the
+   airflow sensor - 95%") with the tests it took and a "See the report" button; the chart marks the crossing.
+4. Evidence drawer: open by default in judge mode, and when the playhead reaches an image/manual/sound evidence, scroll
+   it into view and highlight it; the image evidence shows the photo with the SAM overlay and labels. Photo bytes are not
+   in the bundle today; add the demo photo to the bundle blobs if that needs a backend change, list it for me instead of
+   editing backend/ (I'll route it).
+5. Visual design: give it a real identity: a header bar with product mark and status chips, a confident accent colour,
+   larger type for the key numbers, cards with clear hierarchy, consistent spacing, the chart taller with readable
+   labels, dark mode checked. Landing: one strong headline, the two-sentence explanation, the primary Play button, the
+   5-step path as a compact checklist. Phone width must stay usable. No new npm dependency.
+6. Report page/template: printable, with the summary at the chosen level, the trace, expected-vs-measured with source
+   badges (manual/kp/physics/DSP/AI), the Wonder review section, reproducibility hashes.
+Update scripts/screenshot_site.sh so it can drive the stateful shots too if google-chrome + playwright-core are present
+(playwright-core@1.49.1 is installed under the host scratchpad, not in your sandbox; keep it optional). Web must build
+(npm ci --offline, npm run build). Do not commit. Foreground commands only. Finish with files changed and anything you
+need from backend/.

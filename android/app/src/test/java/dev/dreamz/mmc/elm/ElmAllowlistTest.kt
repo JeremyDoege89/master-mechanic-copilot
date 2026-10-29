@@ -63,10 +63,10 @@ class ElmAllowlistTest {
     @Test
     fun mode04NeedsSingleUseToken() {
         blocks { Allowlist.check("04", profile = genuine) } // no token
-        val token = ClearToken()
-        allows { Allowlist.check("04", profile = genuine, token = token) }
+        val token = ClearToken("backend-token", "sess1", 9_999_999_999_999L)
+        allows { Allowlist.check("04", profile = genuine, token = token, sessionId = "sess1") }
         assertTrue(token.isConsumed)
-        blocks { Allowlist.check("04", profile = genuine, token = token) } // reuse throws
+        blocks { Allowlist.check("04", profile = genuine, token = token, sessionId = "sess1") } // reuse throws
     }
 
     @Test

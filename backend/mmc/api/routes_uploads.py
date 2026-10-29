@@ -233,21 +233,27 @@ async def upload_csv_parse(session_id: str, body: CsvParseBody):
     derived, skipped = csv_logs.derive_tests(parsed, session.meta.get("vehicle"))
     submitted: list[dict] = []
     skipped = list(skipped)
-    state = sess.compute_state(session)
-    performed = {e["test_ref"] for e in state["tests_log"]}
-    runnable = {r["kp_test_ref"] for r in state["next_tests"]}
-    for item in derived:
-        ref = item["test_ref"]
-        if ref in performed:
-            skipped.append({"test_ref": ref, "reason": "already performed"})
-            continue
-        if ref not in runnable:
-            skipped.append({"test_ref": ref, "reason": "not currently runnable"})
-            continue
-        submitted.append(_submit_derived(session, ref, item["measured"], [evidence["evidence_id"]]))
-        performed.add(ref)
+    # Finding #9: the derived check-then-submit loop holds the same
+    # per-session lock as the result route, so a CSV parse racing a
+    # manual submission of the same test cannot double-apply it.
+    from mmc.api.routes import session_lock
+
+    async with session_lock(session.id):
         state = sess.compute_state(session)
+        performed = {e["test_ref"] for e in state["tests_log"]}
         runnable = {r["kp_test_ref"] for r in state["next_tests"]}
+        for item in derived:
+            ref = item["test_ref"]
+            if ref in performed:
+                skipped.append({"test_ref": ref, "reason": "already performed"})
+                continue
+            if ref not in runnable:
+                skipped.append({"test_ref": ref, "reason": "not currently runnable"})
+                continue
+            submitted.append(_submit_derived(session, ref, item["measured"], [evidence["evidence_id"]]))
+            performed.add(ref)
+            state = sess.compute_state(session)
+            runnable = {r["kp_test_ref"] for r in state["next_tests"]}
     return {
         "series": sorted(parsed.series),
         "derived_tests": submitted,

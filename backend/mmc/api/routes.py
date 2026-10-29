@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
+import re
+import threading
 import uuid
 
 from fastapi import APIRouter, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
 from mmc import sessions as sess
@@ -14,6 +18,42 @@ from mmc.store import blobs as blob_store
 from mmc.store.event_store import EVENT_TYPES
 
 router = APIRouter()
+
+# Finding #1: the generic events endpoint is client-writeable only for
+# observation-side types. Engine/privileged types (test_result,
+# test_performed, posterior_updated, hypothesis_proposed, llm_call,
+# sam_call, codes_clear_requested, codes_cleared, report_built,
+# session_started, adapter_fingerprinted) are appended only by the
+# server-side routes that own their validation, and are 403 here.
+CLIENT_POSTABLE_EVENT_TYPES = frozenset(
+    {"safety_ack", "observation_added", "evidence_added", "asr_segment", "test_requested"}
+)
+
+
+def _require_writable(session: sess.Session) -> None:
+    """Finding #2: replay sessions stay read-only on the core routes too,
+    mirroring the vision/upload guard (409 on mode == replay)."""
+    if session.meta.get("mode") == "replay":
+        raise HTTPException(status_code=409, detail="replay sessions are read-only")
+
+
+# Finding #9: one asyncio lock per session serialises the
+# check-then-append sequence in post_test_result (and the CSV derived
+# loop), so two concurrent submissions of the same test cannot both pass
+# the runnable/already-performed checks. The EventStore lock only makes
+# single appends atomic, not the sequence.
+_SESSION_LOCKS: dict[str, asyncio.Lock] = {}
+_SESSION_LOCKS_GUARD = threading.Lock()
+
+
+def session_lock(session_id: str) -> asyncio.Lock:
+    """Return the per-session check-then-append lock (shared with uploads)."""
+    with _SESSION_LOCKS_GUARD:
+        lock = _SESSION_LOCKS.get(session_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            _SESSION_LOCKS[session_id] = lock
+        return lock
 
 MAX_BLOB_BYTES = 32 * 1024 * 1024
 
@@ -111,8 +151,14 @@ async def create_session(body: CreateSessionBody):
 @router.post("/sessions/{session_id}/events")
 async def post_event(session_id: str, body: EventBody):
     session = _require_session(session_id)
+    _require_writable(session)
     if body.type not in EVENT_TYPES:
         raise HTTPException(status_code=400, detail=f"unknown event type: {body.type!r}")
+    if body.type not in CLIENT_POSTABLE_EVENT_TYPES:
+        raise HTTPException(
+            status_code=403,
+            detail=f"event type {body.type!r} is engine/privileged: use its dedicated route",
+        )
     event = await _append_and_push(session, body.type, dict(body.payload))
     return {"seq": event["seq"], "hash": event["hash"]}
 
@@ -186,7 +232,8 @@ async def post_replay(body: ReplayBody):
 
 @router.post("/sessions/{session_id}/blobs")
 async def upload_blob(session_id: str, file: UploadFile = File(...)):
-    _require_session(session_id)
+    session = _require_session(session_id)
+    _require_writable(session)
     data = await file.read()
     if len(data) > MAX_BLOB_BYTES:
         raise HTTPException(status_code=413, detail="blob too large")
@@ -194,80 +241,164 @@ async def upload_blob(session_id: str, file: UploadFile = File(...)):
     return {"blob_ref": blob_ref, "sha256": sha}
 
 
+_BLOB_SHA_RE = re.compile(r"[0-9a-f]{64}")
+
+
+def _session_blob_types(session: sess.Session) -> dict[str, str]:
+    """Map referenced blob sha (lowercase) -> evidence type.
+
+    Only blobs named by this session's own ``evidence_added`` payloads
+    (``blob_ref`` suffix or ``content_hash``) are fetchable, so the
+    public site cannot be used to pull arbitrary blobs.
+    """
+    index: dict[str, str] = {}
+    for event in session.store.iter_replay():
+        if event.get("type") != "evidence_added":
+            continue
+        payload = event.get("payload") or {}
+        etype = str(payload.get("type", ""))
+        for key in ("content_hash", "blob_ref"):
+            raw = payload.get(key)
+            if not isinstance(raw, str) or not raw:
+                continue
+            digest = raw.split("/")[-1].lower()
+            if _BLOB_SHA_RE.fullmatch(digest):
+                index.setdefault(digest, etype)
+    return index
+
+
+def _blob_media_type(data: bytes, etype: str) -> str:
+    """Content type for a session blob: magic bytes first, evidence type fallback."""
+    if data[:2] == b"\xff\xd8":
+        return "image/jpeg"
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    if data.startswith(b"%PDF"):
+        return "application/pdf"
+    if data[:4] == b"RIFF" and data[8:12] == b"WAVE":
+        return "audio/wav"
+    if etype == "image":
+        return "image/jpeg"
+    if etype == "audio":
+        return "audio/wav"
+    if etype == "manual_page":
+        return "application/pdf"
+    stripped = data.strip()[:1]
+    if stripped in (b"{", b"["):
+        try:
+            import json as _json
+
+            _json.loads(data.decode("utf-8"))
+            return "application/json"
+        except (ValueError, UnicodeDecodeError):
+            pass
+    return "application/octet-stream"
+
+
+@router.get("/sessions/{session_id}/blobs/{sha256}")
+async def download_blob(session_id: str, sha256: str):
+    """Stream one blob referenced by this session's event log.
+
+    The digest must appear as an ``evidence_added`` payload's ``blob_ref``
+    or ``content_hash`` for this session (replay sessions included);
+    anything else is 404 so unreferenced blobs stay unfetchable.
+    """
+    session = _require_session(session_id)
+    digest = sha256.lower()
+    if not _BLOB_SHA_RE.fullmatch(digest):
+        raise HTTPException(status_code=404, detail="unknown blob")
+    etype = _session_blob_types(session).get(digest)
+    if etype is None:
+        raise HTTPException(status_code=404, detail="unknown blob")
+    try:
+        data = blob_store.get(f"blobs/{digest}")
+    except (OSError, ValueError) as e:
+        raise HTTPException(status_code=404, detail=f"unknown blob: {e}") from e
+    if hashlib.sha256(data).hexdigest() != digest:
+        raise HTTPException(status_code=404, detail="unknown blob")
+    return Response(content=data, media_type=_blob_media_type(data, etype))
+
+
 @router.post("/sessions/{session_id}/tests/{test_ref}/result")
 async def post_test_result(session_id: str, test_ref: str, body: ResultBody):
     session = _require_session(session_id)
+    _require_writable(session)
     pack = sess.get_pack()
     test = pack.tests.get(test_ref)
     if test is None:
         raise HTTPException(status_code=404, detail=f"unknown test {test_ref!r}")
-    state = sess.compute_state(session)
-    if any(e["test_ref"] == test_ref for e in state["tests_log"]):
-        raise HTTPException(status_code=409, detail=f"test {test_ref!r} already performed")
-    runnable = {r["kp_test_ref"] for r in state["next_tests"]}
-    if test_ref not in runnable:
-        blocked = next(
-            (b for b in state["blocked_tests"] if b["kp_test_ref"] == test_ref), None
-        )
-        reasons = blocked["blocked_reasons"] if blocked else ["not currently runnable"]
-        raise HTTPException(status_code=409, detail=f"test not runnable: {'; '.join(reasons)}")
-    manual_spec = None
-    if body.spec_id is not None:
-        from mmc.upload import specs as specs_mod
+    # Finding #9: the runnable/already-performed checks and the three
+    # appends hold the per-session lock, so concurrent submissions of the
+    # same test serialise (one 200, the other 409) instead of both
+    # passing the checks and double-counting the likelihood update.
+    async with session_lock(session.id):
+        state = sess.compute_state(session)
+        if any(e["test_ref"] == test_ref for e in state["tests_log"]):
+            raise HTTPException(status_code=409, detail=f"test {test_ref!r} already performed")
+        runnable = {r["kp_test_ref"] for r in state["next_tests"]}
+        if test_ref not in runnable:
+            blocked = next(
+                (b for b in state["blocked_tests"] if b["kp_test_ref"] == test_ref), None
+            )
+            reasons = blocked["blocked_reasons"] if blocked else ["not currently runnable"]
+            raise HTTPException(status_code=409, detail=f"test not runnable: {'; '.join(reasons)}")
+        manual_spec = None
+        if body.spec_id is not None:
+            from mmc.upload import specs as specs_mod
 
-        spec = specs_mod.find_spec(session, body.spec_id)
-        if spec is None:
-            # Unknown spec_id: 400 with zero events appended (validated
-            # before the first append below).
-            raise HTTPException(status_code=400, detail=f"unknown spec_id {body.spec_id!r}")
-        manual_spec = specs_mod.manual_spec_for(spec)
-    try:
-        outcome, expected = evaluator_mod.evaluate(test, dict(body.measured), manual_spec)
-    except (ValueError, KeyError) as e:
-        raise HTTPException(status_code=400, detail=f"cannot evaluate: {e}")
+            spec = specs_mod.find_spec(session, body.spec_id)
+            if spec is None:
+                # Unknown spec_id: 400 with zero events appended (validated
+                # before the first append below).
+                raise HTTPException(status_code=400, detail=f"unknown spec_id {body.spec_id!r}")
+            manual_spec = specs_mod.manual_spec_for(spec)
+        try:
+            outcome, expected = evaluator_mod.evaluate(test, dict(body.measured), manual_spec)
+        except (ValueError, KeyError) as e:
+            raise HTTPException(status_code=400, detail=f"cannot evaluate: {e}")
 
-    result_id = uuid.uuid4().hex
-    measured_doc = {"value": dict(body.measured)}
-    if body.conditions:
-        measured_doc["conditions"] = dict(body.conditions)
-    test_result_payload = {
-        "result_id": result_id,
-        "test_id": test_ref,
-        "expected": expected,
-        "measured": measured_doc,
-        "outcome": outcome,
-        "evaluator": test.evaluator,
-        "evidence_ids": list(body.evidence_ids),
-    }
-    try:
-        sess.validate("test_result", test_result_payload)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"bad test_result: {e}")
+        result_id = uuid.uuid4().hex
+        measured_doc = {"value": dict(body.measured)}
+        if body.conditions:
+            measured_doc["conditions"] = dict(body.conditions)
+        test_result_payload = {
+            "result_id": result_id,
+            "test_id": test_ref,
+            "expected": expected,
+            "measured": measured_doc,
+            "outcome": outcome,
+            "evaluator": test.evaluator,
+            "evidence_ids": list(body.evidence_ids),
+        }
+        try:
+            sess.validate("test_result", test_result_payload)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"bad test_result: {e}")
 
-    performed_payload = {
-        "performed_ts": sess._utc_now(),
-        "test_id": result_id,
-        "test_ref": test_ref,
-        "by_level": session.meta["user_level"],
-        "conditions": dict(body.conditions),
-        "safety_ack": test.safety_gate if test.safety_gate != "none" else None,
-    }
-    # Atomicity: everything above is validated before the first append; the
-    # three appends below are infallible given valid inputs (one fails = none
-    # appended holds because no append has happened yet at any failure point).
-    await _append_and_push(session, "test_performed", performed_payload)
-    event = await _append_and_push(session, "test_result", test_result_payload)
-    posterior_payload = {
-        "result_id": result_id,
-        "test_id": test_ref,
-        "updates": [
-            {"hypothesis_id": h["hypothesis_id"], "prior": h["prior"], "posterior": h["current"]}
-            for h in sess.compute_state(session)["hypotheses"]
-        ],
-    }
-    await _append_and_push(session, "posterior_updated", posterior_payload)
-    return {"test_result": test_result_payload, "updates": posterior_payload["updates"],
-            "seq": event["seq"], "hash": event["hash"]}
+        performed_payload = {
+            "performed_ts": sess._utc_now(),
+            "test_id": result_id,
+            "test_ref": test_ref,
+            "by_level": session.meta["user_level"],
+            "conditions": dict(body.conditions),
+            "safety_ack": test.safety_gate if test.safety_gate != "none" else None,
+        }
+        # Atomicity: everything above is validated before the first append; the
+        # three appends below are infallible given valid inputs (one fails = none
+        # appended holds because no append has happened yet at any failure point).
+        await _append_and_push(session, "test_performed", performed_payload)
+        event = await _append_and_push(session, "test_result", test_result_payload)
+        posterior_payload = {
+            "result_id": result_id,
+            "test_id": test_ref,
+            "updates": [
+                {"hypothesis_id": h["hypothesis_id"], "prior": h["prior"], "posterior": h["current"]}
+                for h in sess.compute_state(session)["hypotheses"]
+            ],
+        }
+        await _append_and_push(session, "posterior_updated", posterior_payload)
+        return {"test_result": test_result_payload, "updates": posterior_payload["updates"],
+                "seq": event["seq"], "hash": event["hash"]}
 
 
 @router.get("/meta/levels")
@@ -393,6 +524,8 @@ async def confirm_clear_codes(session_id: str, body: ClearConfirmBody):
 
 @router.post("/sessions/{session_id}/report")
 async def build_report(session_id: str):
+    import jsonschema
+
     from mmc.meta import wonder as wonder_mod
     from mmc.meta.client import MetaClient, MetaClientError, NoCachedResponse
 
@@ -400,17 +533,28 @@ async def build_report(session_id: str):
     registry = sess.get_registry()
     state = sess.compute_state(session)
     report = sess.build_report(session, state)
+    # Finding #11: a stored review with no newer diagnostic event is
+    # still current — reuse it instead of spending a new Wonder call.
+    # This check runs before (and in) public mode, so demo-bundle
+    # recorded reviews keep serving at $0 too.
+    head_hash = report["reproducibility"]["log_head_hash"]
+    stored = sess.find_current_report_review(session)
+    if stored is not None:
+        report["wonder_review"] = stored
+        report["wonder_unavailable"] = None
+        audit = None
     # One Wonder review per report; unavailable (no key / budget / API
     # error) ships the report with wonder_review null, never blocks it.
     # Wonder stays off in public replay mode (M6 fix 3).
-    from mmc import public as public_mod
-
-    if public_mod.is_public():
-        report["wonder_review"] = None
-        report["wonder_unavailable"] = "AI review unavailable in public replay mode."
-        audit = None
     else:
-        audit = wonder_mod.build_audit_bundle(report, state)
+        from mmc import public as public_mod
+
+        if public_mod.is_public():
+            report["wonder_review"] = None
+            report["wonder_unavailable"] = "AI review unavailable in public replay mode."
+            audit = None
+        else:
+            audit = wonder_mod.build_audit_bundle(report, state)
     if audit is not None:
         try:
             default_client = MetaClient(
@@ -422,11 +566,13 @@ async def build_report(session_id: str):
             report["wonder_review"] = None
             report["wonder_unavailable"] = f"AI review unavailable: {e}"
         else:
-            # attach_review maps budget/API/cache failures to null + the
-            # unavailable line itself; only unexpected errors escape.
+            # attach_review maps budget/API/cache/invalid-review failures
+            # to null + the unavailable line itself (finding #3); the
+            # extra guard keeps an unexpected ValueError/ValidationError
+            # from 500ing the build before save_report/report_built.
             try:
                 wonder_mod.attach_review(report, audit, default_client)
-            except (MetaClientError, NoCachedResponse) as e:
+            except (MetaClientError, NoCachedResponse, ValueError, jsonschema.ValidationError) as e:
                 report["wonder_review"] = None
                 report["wonder_unavailable"] = f"AI review unavailable: {e}"
     # M6B §1.2: where live Wonder is skipped or fails, serve the recorded
@@ -443,6 +589,7 @@ async def build_report(session_id: str):
         "report_built",
         {
             "report_id": report["report_id"],
+            "log_head_hash": head_hash,
             "wonder_review": report.get("wonder_review"),
             "wonder_unavailable": report.get("wonder_unavailable"),
         },

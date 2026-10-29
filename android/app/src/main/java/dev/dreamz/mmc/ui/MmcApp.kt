@@ -1053,9 +1053,11 @@ private fun LiveScreen(c: MmcController) {
     if (c.proBanner() == null && next != null) {
         Text("Next test: ${next.optString("kp_test_ref")}")
         Text(next.optString("why"))
+        // M6 finding #8: no one-tap ack here — the checklist lives on the
+        // test card, so acknowledging means opening the test first.
         val gate = next.optString("safety_gate")
         if (gate.isNotEmpty() && gate != "none") {
-            Button(onClick = { c.ackGate(gate) }) { Text("Acknowledge safety: $gate") }
+            Text("Safety gate '$gate' — open the test to confirm the checklist.")
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(onClick = { c.refreshState() }) { Text("Refresh") }
@@ -1149,12 +1151,17 @@ private fun SafetyGateCard(c: MmcController, ref: String) {
     if (gate.isEmpty() || gate == "none") return
     val checklist = c.gateChecklistFor(ref)
     val items = c.gateItemsFor(ref)
-    if (checklist == null || items.isEmpty()) {
+    // M6 finding #8: the offline fallback is an explicit ack, never a
+    // gateReady-gated confirm (which deadlocks on empty items).
+    if (SafetyGates.ackPath(checklist != null && items.isNotEmpty())
+        == SafetyGates.AckPath.OFFLINE_EXPLICIT
+    ) {
         Text("Safety gate: $gate (checklist unavailable offline)")
-        Button(onClick = { c.confirmGate(ref) }) { Text("Acknowledge safety: $gate") }
+        Button(onClick = { c.ackGate(gate) }) { Text("Acknowledge safety offline: $gate") }
         return
     }
-    Text(checklist.title, style = MaterialTheme.typography.titleMedium)
+    val card = checkNotNull(checklist)
+    Text(card.title, style = MaterialTheme.typography.titleMedium)
     val checked = c.gateChecks[gate].orEmpty()
     for (item in items) {
         Row(modifier = Modifier.selectable(

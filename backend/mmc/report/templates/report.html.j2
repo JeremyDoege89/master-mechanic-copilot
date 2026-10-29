@@ -2,64 +2,77 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Diagnostic report {{ report.report_id }}</title>
 <style>
 :root {
-  --bg: #ffffff; --surface: #f6f7f9; --card: #ffffff; --ink: #1a1a1a;
-  --muted: #5a5f66; --line: #d8dce1; --accent: #1a5fb4;
+  --bg: #f4f2ec; --surface: #eceae2; --card: #ffffff; --ink: #201a15;
+  --muted: #6b6259; --line: #ddd5c7; --accent: #b3400a;
   --ok: #1e7b34; --warn: #8a5100; --bad: #b00020;
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #14161a; --surface: #1d2026; --card: #20242b; --ink: #e8eaed;
-    --muted: #a8adb5; --line: #3a4048; --accent: #7aa7e8;
+    --bg: #16130f; --surface: #221d17; --card: #241f18; --ink: #f2ebe0;
+    --muted: #b8ab99; --line: #453b2f; --accent: #ff8c42;
     --ok: #7bd88f; --warn: #e8b34b; --bad: #ff8a9d;
   }
 }
-body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; max-width: 60rem; margin: 2rem auto; padding: 0 1rem; color: var(--ink); background: var(--bg); line-height: 1.45; }
+body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; max-width: 60rem; margin: 0 auto; padding: 1.5rem 1rem 3rem; color: var(--ink); background: var(--bg); line-height: 1.5; }
+.topbar { display: flex; align-items: center; gap: 0.75rem; background: var(--card); border: 1px solid var(--line); border-bottom: 3px solid var(--accent); border-radius: 10px; padding: 0.75rem 1rem; margin-bottom: 1.25rem; }
+.mark { background: var(--accent); color: #fff; font-weight: 800; padding: 4px 10px; border-radius: 8px; }
+h1 { font-size: 1.3rem; margin: 0; }
+h2 { font-size: 1.1rem; margin: 1.75rem 0 0.5rem; }
+h3 { font-size: 1rem; margin: 1.25rem 0 0.5rem; }
+.conclusion { border: 2px solid var(--ok); border-radius: 10px; padding: 1rem 1.25rem; background: var(--card); font-size: 1.1rem; }
 table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: 0.92em; }
-th, td { border: 1px solid var(--line); padding: 0.4rem 0.6rem; text-align: left; vertical-align: top; }
+th, td { border: 1px solid var(--line); padding: 0.45rem 0.6rem; text-align: left; vertical-align: top; }
 th { background: var(--surface); }
-.badge { display: inline-block; border: 1px solid var(--muted); border-radius: 8px; padding: 0 0.5rem; font-size: 0.85em; }
+.badge { display: inline-block; border: 1px solid var(--muted); border-radius: 999px; padding: 0 0.5rem; font-size: 0.85em; white-space: nowrap; }
 .ai { border-color: var(--accent); color: var(--accent); }
 .dsp { border-color: var(--ok); color: var(--ok); }
-pre { white-space: pre-wrap; word-break: break-word; }
+.manual { border-color: var(--warn); color: var(--warn); }
+.phys { border-color: var(--ok); color: var(--ok); }
+.kp { border-color: var(--accent); color: var(--accent); }
+pre, code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.88em; }
+pre { white-space: pre-wrap; word-break: break-word; background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 0.75rem 1rem; }
+.muted { color: var(--muted); }
 @media print {
-  :root { --bg: #ffffff; --surface: #ffffff; --card: #ffffff; --ink: #000000; --muted: #333333; --line: #666666; }
+  :root { --bg: #ffffff; --surface: #ffffff; --card: #ffffff; --ink: #000000; --muted: #333333; --line: #666666; --accent: #000000; --ok: #000000; --warn: #000000; --bad: #000000; }
   body { margin: 0; }
-  tr { break-inside: avoid; }
+  tr, .conclusion { break-inside: avoid; }
   .badge { border: 1px solid #000; color: #000; background: none; }
 }
+@media (max-width: 640px) { body { padding: 1rem 0.75rem 2rem; } table { font-size: 0.85em; } }
 </style>
 </head>
 <body>
-<h1>Diagnostic report</h1>
-<p>{{ report.conclusion }}</p>
+<header class="topbar"><span class="mark">MMC</span><h1>Diagnostic report</h1></header>
+<div class="conclusion"><strong>{{ report.hypotheses_final[0].label.L1 }}</strong> — {{ report.conclusion }}</div>
 
-<h2>Summary by level</h2>
-<h3>L1 — driver</h3>
+<h2>Summary</h2>
+<h3>Driver</h3>
 <p>{{ report.summary_by_level.L1 }}</p>
-<h3>L2 — DIY</h3>
+<h3>DIY</h3>
 <p>{{ report.summary_by_level.L2 }}</p>
-<h3>L3 — technician</h3>
+<h3>Technician</h3>
 <p>{{ report.summary_by_level.L3 }}</p>
 
-<h2>Hypotheses</h2>
+<h2>Suspects</h2>
 <table>
 <tr><th>Suspect</th><th>Posterior</th></tr>
 {% for h in report.hypotheses_final %}
-<tr><td>{{ h.label.L1 }} ({{ h.hypothesis_id }})</td><td>{{ h.current }}</td></tr>
+<tr><td><strong>{{ h.label.L1 }}</strong> <span class="muted">({{ h.hypothesis_id }})</span></td><td>{{ "%.1f"|format(h.current * 100) }}%</td></tr>
 {% endfor %}
 </table>
 
 <h2>Explanation trace</h2>
 {% for h in report.hypotheses_final %}
-<h3>{{ h.label.L1 }} ({{ h.hypothesis_id }})</h3>
+<h3>{{ h.label.L1 }} ({{ h.hypothesis_id }}) — {{ h.trace|length }} updates</h3>
 {% if h.trace %}
 <table>
 <tr><th>#</th><th>Test</th><th>Expected</th><th>Measured</th><th>LR</th><th>Source</th><th>What it means</th></tr>
 {% for t in h.trace %}
-<tr><td>{{ t.seq }}</td><td>{{ t.test_id }}</td><td>{{ t.expected }}</td><td>{{ t.measured }}</td><td>{{ t.likelihood_ratio }}</td><td>{{ t.lr_source }}</td><td>{{ t.text_L1 }}</td></tr>
+<tr><td>{{ t.seq }}</td><td>{{ t.test_id }}</td><td>{{ t.expected }}</td><td>{{ t.measured }}</td><td>×{{ t.likelihood_ratio }}</td><td><span class="badge">{{ t.lr_source }}</span></td><td>{{ t.text_L1 }}</td></tr>
 {% endfor %}
 </table>
 {% else %}
@@ -77,7 +90,7 @@ pre { white-space: pre-wrap; word-break: break-word; }
 <td>{{ row.measured }}</td>
 <td>{{ row.outcome }}</td>
 <td>{{ row.evaluator }}</td>
-<td>{% if row.origin == "signal_processing" %}<span class="badge dsp">Signal processing (DSP), not AI</span>{% elif row.origin == "direct_observation" %}Direct observation{% else %}Deterministic ({{ row.evaluator }}){% endif %}</td>
+<td>{% if row.origin == "signal_processing" %}<span class="badge dsp">DSP · signal, not AI</span>{% elif row.expected and row.expected.source and row.expected.source.kind == "manual_page" %}<span class="badge manual">manual</span>{% elif row.expected and row.expected.source and row.expected.source.kind == "kp" %}<span class="badge kp">knowledge pack</span>{% elif row.expected and row.expected.source and row.expected.source.kind == "physics" %}<span class="badge phys">physics</span>{% elif row.expected and row.expected.source and row.expected.source.kind == "mode06_limit" %}<span class="badge">on-board limits</span>{% elif row.origin == "direct_observation" %}Direct observation{% else %}Deterministic ({{ row.evaluator }}){% endif %}</td>
 </tr>
 {% endfor %}
 </table>
@@ -86,7 +99,7 @@ pre { white-space: pre-wrap; word-break: break-word; }
 <table>
 <tr><th>ID</th><th>Type</th><th>Source</th></tr>
 {% for ev in report.evidence %}
-<tr><td>{{ ev.evidence_id }}</td><td>{{ ev.type }}</td><td>{% if ev.ai_extracted %}<span class="badge ai">AI-extracted ({{ ev.extractor }})</span>{% else %}{{ ev.extractor }}{% endif %}{% if ev.agreement %} · {{ ev.agreement }}{% endif %}</td></tr>
+<tr><td class="muted">{{ ev.evidence_id[:8] }}…</td><td>{{ ev.type }}</td><td>{% if ev.ai_extracted %}<span class="badge ai">AI ({{ ev.extractor }})</span>{% else %}{{ ev.extractor }}{% endif %}{% if ev.agreement %} · {{ ev.agreement }}{% endif %}</td></tr>
 {% endfor %}
 </table>
 {% if report.fallback_used %}
@@ -106,7 +119,7 @@ pre { white-space: pre-wrap; word-break: break-word; }
 {% if report.wonder_review.gaps %}
 <ul>
 {% for gap in report.wonder_review.gaps %}
-<li>{{ gap.issue }}{% if gap.test_ref %} — suggested test: {{ gap.test_ref }}{% endif %}{% if gap.evidence_id %} — evidence: {{ gap.evidence_id }}{% endif %}{% if gap.rationale %} ({{ gap.rationale }}){% endif %}</li>
+<li>{{ gap.issue }}{% if gap.test_ref %} — suggested test: {{ gap.test_ref }}{% endif %}{% if gap.evidence_id %} — evidence: {{ gap.evidence_id[:8] }}…{% endif %}{% if gap.rationale %} ({{ gap.rationale }}){% endif %}</li>
 {% endfor %}
 </ul>
 {% endif %}
@@ -117,8 +130,6 @@ pre { white-space: pre-wrap; word-break: break-word; }
 
 <h2>Reproducibility</h2>
 <pre>engine {{ report.reproducibility.engine_version }} · KP {{ report.reproducibility.kp_version }} · prompts {{ report.reproducibility.prompts_sha256 }} · log {{ report.reproducibility.log_head_hash }} · models {{ report.reproducibility.model_pins }}</pre>
-{% if report.vin_last6 %}
-<p>Vehicle ····{{ report.vin_last6 }}</p>
-{% endif %}
+<p class="muted">report {{ report.report_id }}{% if report.vin_last6 %} · vehicle ····{{ report.vin_last6 }}{% endif %}</p>
 </body>
 </html>

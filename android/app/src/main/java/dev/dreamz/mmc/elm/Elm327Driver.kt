@@ -80,9 +80,15 @@ class Elm327Driver(
     }
 
     /** Gated single request: "01".."0A" PIDs, "03" DTCs, "22" DID reads, "04" with token. */
-    fun query(service: String, did: String? = null, token: ClearToken? = null): ElmResult {
+    fun query(
+        service: String,
+        did: String? = null,
+        token: ClearToken? = null,
+        sessionId: String? = null,
+        nowMs: Long = System.currentTimeMillis(),
+    ): ElmResult {
         val p = profile ?: throw IllegalStateException("init() first")
-        Allowlist.check(service, did, p, allowMode22, mode22Allowlist, token)
+        Allowlist.check(service, did, p, allowMode22, mode22Allowlist, token, sessionId, nowMs)
         val line = if (service == "22") "22$did" else service
         return Parsers.frame(send(line, TIMEOUT_STEADY_MS))
     }

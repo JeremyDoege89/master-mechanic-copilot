@@ -180,11 +180,20 @@ def build_report(session: Any, state: dict) -> dict:
         if doc.get("type") == "image" and eid in by_evidence
     ]
 
-    gates = sorted(
-        {t.get("safety_gate", "none") for t in state["next_tests"]}
-        | {b.get("safety_gate", "none") for b in state.get("blocked_tests", [])}
-        - {"none"}
-    )
+    # Finding #7: gates come from actual acknowledgements in the log —
+    # safety_ack events plus the gate recorded on each performed gated
+    # test — never from the merely-available next/blocked tests. (The old
+    # set expression also had a precedence bug: `- {"none"}` bound to the
+    # second operand only, so "none" survived into the report.)
+    acked_gates: set[str] = set()
+    for event in session.store.iter_replay():
+        payload = event.get("payload") or {}
+        if event.get("type") == "safety_ack" and payload.get("gate"):
+            acked_gates.add(str(payload["gate"]))
+        elif event.get("type") == "test_performed" and payload.get("safety_ack"):
+            acked_gates.add(str(payload["safety_ack"]))
+    acked_gates.discard("none")
+    gates = sorted(acked_gates)
     safety_notes = (
         [f"Safety gate acknowledged during session: {g}." for g in gates]
         or ["No safety-gated tests were run in this session."]

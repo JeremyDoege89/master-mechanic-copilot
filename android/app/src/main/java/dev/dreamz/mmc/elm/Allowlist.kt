@@ -29,6 +29,10 @@ object Allowlist {
      * @param allowMode22 env/config flag (ALLOW_MODE22).
      * @param mode22Allowlist DIDs from config/mode22_allowlist.yaml.
      * @param token single-use token for mode 0x04; consumed on success.
+     *   Must carry the backend-issued token string for [sessionId] and be
+     *   unexpired — a locally-minted token is rejected (M6 finding #4).
+     * @param sessionId backend session the Mode 04 token must be bound to.
+     * @param nowMs clock for the token expiry check (injectable for tests).
      * @throws BlockedRequestException when the request is not allowed.
      */
     fun check(
@@ -38,6 +42,8 @@ object Allowlist {
         allowMode22: Boolean = false,
         mode22Allowlist: Set<String> = emptySet(),
         token: ClearToken? = null,
+        sessionId: String? = null,
+        nowMs: Long = System.currentTimeMillis(),
     ) {
         val head = service.trim().uppercase()
         if (head in NEVER_SEND_COMMANDS) throw BlockedRequestException("never-send command: $service")
@@ -48,6 +54,11 @@ object Allowlist {
         if (firstByte in BLOCKED_FIRST_BYTES) throw BlockedRequestException("blocked service: $service")
         if (head == "04") {
             if (token == null) throw BlockedRequestException("mode 04 requires a ClearToken")
+            if (token.token.isBlank()) throw BlockedRequestException("mode 04 token is not backend-issued")
+            if (sessionId == null || token.sessionId != sessionId) {
+                throw BlockedRequestException("mode 04 token bound to another session")
+            }
+            if (token.isExpired(nowMs)) throw BlockedRequestException("mode 04 token expired")
             token.consume()
             return
         }

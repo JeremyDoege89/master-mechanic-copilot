@@ -43,4 +43,23 @@ class SessionClientTest {
         val req = client.buildUploadRequest("s", "log.csv", "a,b".toByteArray(), "text/csv", "csv")
         assertTrue(req.url.toString().endsWith("/sessions/s/uploads"))
     }
+
+    @Test
+    fun clearCodesRequestBodyCarriesSnapshot() {
+        val body = client.buildClearCodesRequestBody(
+            listOf("P0303"),
+            mapOf("ect_c" to 90),
+            emptyMap(),
+        )
+        assertEquals(listOf("P0303"), body["dtcs"])
+        assertEquals(90, (body["freeze_frame"] as Map<*, *>)["ect_c"])
+    }
+
+    @Test
+    fun clearCodesConfirmBodyTypesClearCodesExactly() {
+        val body = client.buildClearCodesConfirmBody("tok123", true)
+        assertEquals("tok123", body["token"])
+        assertEquals("CLEAR CODES", body["typed_confirmation"])
+        assertEquals(true, body["engine_off_key_on"])
+    }
 }

@@ -18,7 +18,11 @@ def test_all_session_bundles_verify():
     assert bundles, "expected at least one .mmrec fixture"
     for bundle in bundles:
         manifest = mmrec.verify(bundle)
-        assert set(manifest["files"]) == {"transcript.jsonl", "events.jsonl", "meta.json"}
+        assert {"transcript.jsonl", "events.jsonl", "meta.json"} <= set(manifest["files"])
+        extras = set(manifest["files"]) - {"transcript.jsonl", "events.jsonl", "meta.json"}
+        assert all(e.startswith("blobs/") for e in extras), (bundle, extras)
+        for e in extras:
+            assert manifest["files"][e] == e.split("/")[-1], (bundle, e)
 
 
 def test_sim_healthy_bundle_shape():

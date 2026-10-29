@@ -186,6 +186,47 @@ class SessionClient(baseUrl: String) {
         }
     }
 
+    /** Build (don't send) the clear-codes request body — pure JVM map, unit-tested. */
+    fun buildClearCodesRequestBody(
+        dtcs: List<String>,
+        freezeFrame: Map<String, Any?>? = null,
+        mode06: Map<String, Any?>? = null,
+    ): Map<String, Any?> {
+        val body = mutableMapOf<String, Any?>("dtcs" to dtcs)
+        if (freezeFrame != null) body["freeze_frame"] = freezeFrame
+        if (mode06 != null) body["mode06"] = mode06
+        return body
+    }
+
+    /** Build (don't send) the clear-codes confirm body — pure JVM map, unit-tested. */
+    fun buildClearCodesConfirmBody(token: String, engineOffKeyOn: Boolean): Map<String, Any?> =
+        mapOf(
+            "token" to token,
+            "typed_confirmation" to "CLEAR CODES",
+            "engine_off_key_on" to engineOffKeyOn,
+        )
+
+    /** Gated clear-codes step 1: snapshot DTCs, get the backend token + expiry. */
+    fun requestClearCodes(
+        sessionId: String,
+        dtcs: List<String>,
+        freezeFrame: Map<String, Any?>? = null,
+        mode06: Map<String, Any?>? = null,
+    ): JSONObject = post(
+        "/sessions/$sessionId/clear-codes/request",
+        JSONObject(buildClearCodesRequestBody(dtcs, freezeFrame, mode06) as Map<*, *>),
+    )
+
+    /** Gated clear-codes step 2: confirm; returns {cleared, clear_token}. */
+    fun confirmClearCodes(
+        sessionId: String,
+        token: String,
+        engineOffKeyOn: Boolean,
+    ): JSONObject = post(
+        "/sessions/$sessionId/clear-codes/confirm",
+        JSONObject(buildClearCodesConfirmBody(token, engineOffKeyOn) as Map<*, *>),
+    )
+
     fun buildReport(sessionId: String): JSONObject = post("/sessions/$sessionId/report", JSONObject())
 
     fun getReport(url: String): JSONObject {

@@ -61,4 +61,16 @@ object SafetyGates {
     /** True once every displayed item is ticked. */
     fun allChecked(required: List<String>, checked: Set<String>): Boolean =
         required.all { it in checked }
+
+    /** Which ack path a test card takes (M6 finding #8). */
+    enum class AckPath { CHECKLIST, OFFLINE_EXPLICIT }
+
+    /**
+     * Cards with a backend checklist tick boxes and confirm through
+     * `confirmGate` (which requires every box). Without a checklist the
+     * only path is an explicit offline ack — never a `gateReady`-gated
+     * confirm, which deadlocks on empty items.
+     */
+    fun ackPath(hasChecklist: Boolean): AckPath =
+        if (hasChecklist) AckPath.CHECKLIST else AckPath.OFFLINE_EXPLICIT
 }

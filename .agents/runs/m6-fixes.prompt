@@ -1,0 +1,8 @@
+Fix every finding in .agents/reviews/M6.md (a Wonder code review; #1 and #2 are blocking). Read it fully first. For each
+finding: a failing test that reproduces the stated scenario, then the fix, then the test passes. Scope: backend/ and
+android/ only. A parallel job is editing web/src and backend/mmc/report/templates/ — do not touch those. Keep the full
+backend suite under 3 minutes and the two demo bundles valid: if a fix changes their event stream, regenerate them with
+`backend/.venv/bin/python scripts/make_demo_bundle.py` (works offline from the committed demo cache) and confirm
+`make_demo_bundle.py --check` and replay_check pass. Run the backend suite (.venv/bin/python -m pytest -q), replay_check
+and the Android build (offline, seeded GRADLE_USER_HOME) until green. Add a dated docs/DECISIONS.md entry. Do not commit.
+Foreground commands only. Finish with a table: finding #, fix, test name, status.

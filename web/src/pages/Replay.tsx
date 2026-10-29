@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   API_BASE,
   apiGet,
@@ -9,17 +9,20 @@ import {
   type SessionEvent,
   type SessionState,
 } from "../api";
+import { describeEvent, gateLabel, prettyRef, testTitle } from "../labels";
 import HypothesisChart from "../components/HypothesisChart";
 import SamOverlay from "../components/SamOverlay";
 
 interface Props {
   autoJudge?: boolean;
   onReport?: (reportId: string) => void;
+  onLatestReport?: (reportId: string | null) => void;
 }
 
 const JUDGE_FIXTURE = "sim-vacuum-leak.mmrec";
 const COIL_FIXTURE = "sim-coil-unplugged.mmrec";
 
+const JUDGE_HEADLINE = "Watch a vacuum leak get caught.";
 const JUDGE_HERO_1 =
   "This is a recorded-style investigation of a simulated Ford with a vacuum leak.";
 const JUDGE_HERO_2 =
@@ -52,17 +55,6 @@ const GLYPH: Record<string, string> = {
   report_built: "★",
 };
 
-function shortLabel(e: SessionEvent): string {
-  const p = e.payload as Record<string, unknown>;
-  const ref =
-    (p.test_ref as string | undefined) ??
-    (p.test_id as string | undefined) ??
-    (p.gate as string | undefined) ??
-    (p.evidence_id as string | undefined)?.slice(0, 8) ??
-    "";
-  return ref ? `${e.type} ${ref}` : e.type;
-}
-
 function instructions(
   t: Pick<NextTest, "instructions_by_level">,
   level: Level,
@@ -80,7 +72,7 @@ interface OverlayMask {
   used_concept?: string;
   found?: boolean;
   svg_path?: string;
-  box?: { x1: number; y1: number; x2: number; y2: number };
+  box?: { x1: number; y1: number; x2: number; y2: number } | { x_min: number; x_max: number; y_min: number; y_max: number };
 }
 
 function overlayExtent(masks: OverlayMask[]): { w: number; h: number } {
@@ -88,14 +80,16 @@ function overlayExtent(masks: OverlayMask[]): { w: number; h: number } {
   let h = 480;
   for (const m of masks) {
     if (m.box) {
-      w = Math.max(w, m.box.x2 + 4);
-      h = Math.max(h, m.box.y2 + 4);
+      const x2 = "x2" in m.box ? m.box.x2 : m.box.x_max;
+      const y2 = "y2" in m.box ? m.box.y2 : m.box.y_max;
+      w = Math.max(w, x2 + 4);
+      h = Math.max(h, y2 + 4);
     }
   }
   return { w, h };
 }
 
-export default function Replay({ autoJudge, onReport }: Props) {
+export default function Replay({ autoJudge, onReport, onLatestReport }: Props) {
   const [sessionId, setSessionId] = useState("");
   const [typedId, setTypedId] = useState("");
   const [events, setEvents] = useState<SessionEvent[]>([]);
@@ -109,7 +103,7 @@ export default function Replay({ autoJudge, onReport }: Props) {
     autoJudge ? "Judge demo ready." : "Load a session to begin.",
   );
   const [reportId, setReportId] = useState<string | null>(null);
-  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [drawerOpen, setDrawerOpen] = useState<boolean>(!!autoJudge);
 
   const loadSession = useCallback(
     async (id: string, replaySpeed: number, startAtZero: boolean) => {
@@ -121,10 +115,25 @@ export default function Replay({ autoJudge, onReport }: Props) {
       setMaxSeq(max);
       setCursor(startAtZero ? 0 : max);
       setPlaying(startAtZero);
-      setReportId(null);
-      setStatus(`Session ${id.slice(0, 8)}… loaded (${ev.events.length} events).`);
+      const built = ev.events.filter((e) => e.type === "report_built");
+      const last = built[built.length - 1];
+      const rid =
+        last != null
+          ? String((last.payload as Record<string, unknown>).report_id ?? "")
+          : "";
+      if (rid) {
+        setReportId(rid);
+        onLatestReport?.(rid);
+        setStatus(
+          `Session ${id.slice(0, 8)}… loaded (${ev.events.length} events). Its report is ready — open the Report tab.`,
+        );
+      } else {
+        setReportId(null);
+        onLatestReport?.(null);
+        setStatus(`Session ${id.slice(0, 8)}… loaded (${ev.events.length} events).`);
+      }
     },
-    [],
+    [onLatestReport],
   );
 
   const playFixture = useCallback(
@@ -208,6 +217,7 @@ export default function Replay({ autoJudge, onReport }: Props) {
       setStatus("Building report…");
       const r = await apiPost<{ report_id: string }>(`/sessions/${sessionId}/report`, {});
       setReportId(r.report_id);
+      onLatestReport?.(r.report_id);
       setStatus("Report ready.");
       onReport?.(r.report_id);
     } catch (e) {
@@ -215,43 +225,94 @@ export default function Replay({ autoJudge, onReport }: Props) {
     }
   };
 
+  const seeReport = () => {
+    if (reportId) onReport?.(reportId);
+  };
+
   const stop = state?.stop_and_see_pro;
-  const evidence = events.filter((e) => e.type === "evidence_added");
-  const observations = events.filter((e) => e.type === "observation_added");
+  const evidence = useMemo(() => events.filter((e) => e.type === "evidence_added"), [events]);
+  const observations = useMemo(
+    () => events.filter((e) => e.type === "observation_added"),
+    [events],
+  );
+
+  const obsByEvidence = useMemo(() => {
+    const m = new Map<string, SessionEvent[]>();
+    for (const o of observations) {
+      const ids = ((o.payload as Record<string, unknown>).evidence_ids as string[] | undefined) ?? [];
+      for (const id of ids) {
+        const arr = m.get(id) ?? [];
+        arr.push(o);
+        m.set(id, arr);
+      }
+    }
+    return m;
+  }, [observations]);
+
+  const hypLabels = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const h of state?.hypotheses ?? []) {
+      m.set(h.hypothesis_id, h.label[level] ?? h.label.L1);
+    }
+    return m;
+  }, [state, level]);
+
+  const labelCtx = useMemo(
+    () => ({ obsByEvidence, hypLabels }),
+    [obsByEvidence, hypLabels],
+  );
+
+  // Evidence drawer: highlight the newest image/manual/sound item at the playhead.
+  const activeEvidenceSeq = useMemo(() => {
+    let best = -1;
+    for (const e of evidence) {
+      if (e.seq > cursor) continue;
+      const t = String((e.payload as Record<string, unknown>).type ?? "");
+      if (t === "image" || t === "manual_page" || t === "audio") best = e.seq;
+    }
+    return best;
+  }, [evidence, cursor]);
+
+  useEffect(() => {
+    if (!drawerOpen || activeEvidenceSeq < 0) return;
+    const el = document.getElementById(`ev-${activeEvidenceSeq}`);
+    el?.scrollIntoView({ block: "nearest" });
+  }, [activeEvidenceSeq, drawerOpen, cursor]);
+
   const vin = (state?.vehicle as { vin_last6?: string } | null | undefined)?.vin_last6;
+  const top = state && state.hypotheses.length > 0 ? state.hypotheses[0] : null;
+  const concluded = top != null && top.current >= 0.8;
+  const testsTaken = state?.tests_log ?? [];
 
   return (
     <section>
-      <h2>Replay</h2>
-      <p>{status}</p>
+      <h2 className="visually-hidden">Replay</h2>
+      <p className="statusline" aria-live="polite">{status}</p>
       {autoJudge && !sessionId ? (
         <div className="hero">
-          <p>{JUDGE_HERO_1}</p>
-          <p>{JUDGE_HERO_2}</p>
-          <p>
-            <button className="primary" onClick={() => void playFixture(JUDGE_FIXTURE)}>
+          <h2 className="hero-title">{JUDGE_HEADLINE}</h2>
+          <p className="hero-sub">{JUDGE_HERO_1} {JUDGE_HERO_2}</p>
+          <p className="hero-cta">
+            <button className="primary big" onClick={() => void playFixture(JUDGE_FIXTURE)}>
               Play the investigation
             </button>
-          </p>
-          <ol>
-            {JUDGE_CHECKLIST.map((item) => (
-              <li key={item}>{item}</li>
-            ))}
-          </ol>
-          <p className="quiet-links">
-            <button onClick={() => void playFixture(COIL_FIXTURE)}>
+            <button className="ghost" onClick={() => void playFixture(COIL_FIXTURE)}>
               Play the coil demo instead
             </button>
-            <button onClick={buildReport} disabled={!sessionId}>
-              Report
-            </button>
-            <span>Full 60-second script: docs/JUDGES.md in the repo.</span>
           </p>
+          <ol className="checklist">
+            {JUDGE_CHECKLIST.map((item, i) => (
+              <li key={item}>
+                <span className="step" aria-hidden="true">{i + 1}</span> {item}
+              </li>
+            ))}
+          </ol>
+          <p className="hero-note">Full 60-second script: docs/JUDGES.md in the repo.</p>
         </div>
       ) : null}
-      {!autoJudge ? (
-        <div>
-          <div>
+      {!autoJudge && !sessionId ? (
+        <div className="card loadcard">
+          <div className="row">
             <input
               value={typedId}
               onChange={(e) => setTypedId(e.target.value)}
@@ -282,19 +343,20 @@ export default function Replay({ autoJudge, onReport }: Props) {
             <span className="mark">MMC</span>
             <span>Vehicle {vin ? `····${vin}` : "—"}</span>
             <span className="chip">Simulated vehicle · real AI outputs</span>
+            {reportId ? <span className="chip ok">Report ready</span> : null}
             <span className="spacer" />
             <span role="group" aria-label="Experience level">
               {(["L1", "L2", "L3"] as Level[]).map((l) => (
-                <button key={l} onClick={() => setLevel(l)} disabled={level === l}>
+                <button key={l} onClick={() => setLevel(l)} disabled={level === l} aria-pressed={level === l}>
                   {l}
                 </button>
               ))}
             </span>
           </div>
 
-          <div>
+          <div className="scrubber card">
             <label>
-              Event seq {cursor}/{maxSeq}{" "}
+              <span className="scrub-label">Event seq {cursor}/{maxSeq}</span>
               <input
                 type="range"
                 min={0}
@@ -307,17 +369,19 @@ export default function Replay({ autoJudge, onReport }: Props) {
                 aria-label="Event scrubber"
               />
             </label>{" "}
-            <button onClick={() => setPlaying((p) => !p)}>
-              {playing ? "Pause" : "Play"}
-            </button>{" "}
-            <label>
-              speed{" "}
-              <select value={speed} onChange={(e) => setSpeed(Number(e.target.value))}>
-                {[0.5, 1, 2, 4].map((s) => (
-                  <option key={s} value={s}>{s}×</option>
-                ))}
-              </select>
-            </label>
+            <span className="scrub-controls">
+              <button onClick={() => setPlaying((p) => !p)}>
+                {playing ? "Pause" : "Play"}
+              </button>{" "}
+              <label>
+                speed{" "}
+                <select value={speed} onChange={(e) => setSpeed(Number(e.target.value))}>
+                  {[0.5, 1, 2, 4].map((s) => (
+                    <option key={s} value={s}>{s}×</option>
+                  ))}
+                </select>
+              </label>
+            </span>
           </div>
 
           {stop?.banner ? (
@@ -332,51 +396,82 @@ export default function Replay({ autoJudge, onReport }: Props) {
             </div>
           ) : null}
 
+          {concluded && top ? (
+            <div className="conclusion" role="status">
+              <div className="conclusion-main">
+                <small className="conclusion-kicker">Most likely</small>
+                <p className="conclusion-line">
+                  <strong>{top.label[level] ?? top.label.L1}</strong>
+                  <span className="pct"> {(top.current * 100).toFixed(0)}%</span>
+                </p>
+                <p className="conclusion-sub">
+                  after {testsTaken.length} test{testsTaken.length === 1 ? "" : "s"}
+                  {testsTaken.length > 0
+                    ? `: ${testsTaken.map((t) => testTitle(t.test_ref)).join(" · ")}`
+                    : ""}
+                </p>
+              </div>
+              <div className="conclusion-cta">
+                {reportId ? (
+                  <button className="primary" onClick={seeReport}>See the report</button>
+                ) : (
+                  <button className="primary" onClick={buildReport}>Build report</button>
+                )}
+              </div>
+            </div>
+          ) : null}
+
           {state ? (
             <div className="replay-grid">
-              <aside className="card" aria-label="Event timeline">
+              <aside className="card timeline-card" aria-label="Event timeline">
                 <h3>Timeline</h3>
                 <ol className="timeline">
-                  {events.map((e) => (
-                    <li key={e.seq}>
-                      <button
-                        aria-current={e.seq === cursor}
-                        onClick={() => {
-                          setPlaying(false);
-                          setCursor(e.seq);
-                        }}
-                      >
-                        <span className="glyph" aria-hidden="true">
-                          {GLYPH[e.type] ?? "·"}
-                        </span>
-                        <span className="seq">{e.seq}</span>
-                        <span>{shortLabel(e)}</span>
-                      </button>
-                    </li>
-                  ))}
+                  {events.map((e) => {
+                    const d = describeEvent(e, labelCtx);
+                    return (
+                      <li key={e.seq}>
+                        <button
+                          aria-current={e.seq === cursor}
+                          onClick={() => {
+                            setPlaying(false);
+                            setCursor(e.seq);
+                          }}
+                        >
+                          <span className="glyph" aria-hidden="true">
+                            {GLYPH[e.type] ?? "·"}
+                          </span>
+                          <span className="seq">{e.seq}</span>
+                          <span className="t-text">
+                            <span className="t-head">{d.headline}</span>
+                            {d.detail ? <span className="t-detail"> {d.detail}</span> : null}
+                            <span className="t-raw">{e.type}</span>
+                          </span>
+                        </button>
+                      </li>
+                    );
+                  })}
                 </ol>
               </aside>
 
-              <div className="card">
+              <div className="card chart-card">
                 <h3>Suspects</h3>
                 <HypothesisChart hypotheses={state.hypotheses} level={level} />
               </div>
 
-              <div className="card" aria-label="Next best tests">
+              <div className="card tests-card" aria-label="Next best tests">
                 <h3>Next best tests</h3>
                 {state.next_tests.length === 0 ? <p>No runnable tests.</p> : null}
                 {state.next_tests.map((t) => (
                   <article key={t.kp_test_ref}>
-                    <h4>
-                      #{t.rank} {t.kp_test_ref}
-                    </h4>
+                    <h4 className="test-title">{testTitle(t.kp_test_ref)}</h4>
+                    <p className="t-raw">{t.kp_test_ref} · #{t.rank}</p>
                     <p>{instructions(t, level)}</p>
                     <p>{t.why}</p>
                     <p>
                       <small>
                         EIG {t.eig_bits.toFixed(2)} bits · {t.cost.minutes} min ·{" "}
                         Tools: {t.required_tools.join(", ") || "none"} · Level {t.min_level} ·{" "}
-                        {t.safety_gate === "none" ? "no safety gate" : `gate: ${t.safety_gate}`}
+                        {t.safety_gate === "none" ? "no safety gate" : `gate: ${gateLabel(t.safety_gate)}`}
                       </small>
                     </p>
                     {t.safety_gate !== "none" && t.gate_checklist ? (
@@ -407,7 +502,7 @@ export default function Replay({ autoJudge, onReport }: Props) {
                       <ul>
                         {t.expected_outcomes.map((o) => (
                           <li key={o.outcome}>
-                            {o.outcome} (p={o.p.toFixed(2)})
+                            {prettyRef(o.outcome)} (p={o.p.toFixed(2)})
                           </li>
                         ))}
                       </ul>
@@ -421,7 +516,8 @@ export default function Replay({ autoJudge, onReport }: Props) {
                     <ul>
                       {state.blocked_tests.map((b: BlockedTest) => (
                         <li key={b.kp_test_ref}>
-                          <strong>{b.kp_test_ref}</strong> — {b.blocked_reasons.join("; ")}
+                          <strong>{testTitle(b.kp_test_ref)}</strong>{" "}
+                          <small className="t-raw">{b.kp_test_ref}</small> — {b.blocked_reasons.join("; ")}
                         </li>
                       ))}
                     </ul>
@@ -439,9 +535,15 @@ export default function Replay({ autoJudge, onReport }: Props) {
                   </div>
                 ) : null}
 
-                <div>
-                  <button onClick={buildReport}>Build report</button>{" "}
-                  {reportId ? <span>Report: {reportId}</span> : null}
+                <div className="report-cta">
+                  {reportId ? (
+                    <>
+                      <button className="primary" onClick={seeReport}>See the report</button>{" "}
+                      <button onClick={buildReport}>Rebuild report</button>
+                    </>
+                  ) : (
+                    <button className="primary" onClick={buildReport}>Build report</button>
+                  )}
                 </div>
               </div>
             </div>
@@ -464,9 +566,7 @@ export default function Replay({ autoJudge, onReport }: Props) {
                   const p = e.payload as Record<string, unknown>;
                   const id = String(p.evidence_id ?? e.seq);
                   const etype = String(p.type ?? e.type);
-                  const linked = observations.filter((o) =>
-                    ((o.payload.evidence_ids as string[] | undefined) ?? []).includes(id),
-                  );
+                  const linked = obsByEvidence.get(id) ?? [];
                   const extractors = linked.map((o) =>
                     String((o.payload as Record<string, unknown>).extractor ?? ""),
                   );
@@ -486,25 +586,79 @@ export default function Replay({ autoJudge, onReport }: Props) {
                   }[] | undefined) ?? [];
                   const masks = overlays.flatMap((o) => o.masks ?? []);
                   const { w, h } = overlayExtent(masks);
+                  // Keyframe photo served by GET /sessions/{id}/blobs/{sha256},
+                  // which only streams blobs this session's log references.
+                  const sha = typeof p.content_hash === "string" ? p.content_hash : "";
+                  const refTail =
+                    typeof p.blob_ref === "string" ? (p.blob_ref.split("/").pop() ?? "") : "";
+                  const digest = /^[0-9a-fA-F]{64}$/.test(sha)
+                    ? sha.toLowerCase()
+                    : /^[0-9a-fA-F]{64}$/.test(refTail)
+                      ? refTail.toLowerCase()
+                      : "";
+                  const imageUrl =
+                    etype === "image" && digest
+                      ? `${API_BASE}/sessions/${sessionId}/blobs/${digest}`
+                      : undefined;
+                  const headline = describeEvent(e, labelCtx).headline;
+                  const isActive = e.seq === activeEvidenceSeq;
+                  const seen = e.seq <= cursor;
+                  const compLabels = [...new Set(
+                    linked
+                      .map((o) => String((o.payload as Record<string, unknown>).feature ?? ""))
+                      .filter((f) => f.startsWith("visual_component:") || f.startsWith("visual_anomaly:"))
+                      .map((f) => f.replace("visual_component:", "").replace("visual_anomaly:", "").replace(/_/g, " ")),
+                  )];
+                  const specRanges = (p.spec_ranges as {
+                    parameter?: string; min?: number; max?: number; units?: string; page?: number;
+                  }[] | undefined) ?? [];
                   return (
-                    <li key={e.seq}>
-                      <strong>{etype}</strong>{" "}
-                      {ai ? <span className="badge ai">AI-extracted: {ai}</span> : null}{" "}
-                      {agreement ? <span className="badge ai">{agreement}</span> : null}{" "}
-                      {dsp ? <span className="badge dsp">Signal processing, not AI</span> : null}{" "}
-                      {etype === "manual_page" ? (
-                        <span className="badge manual">
-                          manual p.{String((p.spec_ranges as { page?: number }[] | undefined)?.[0]?.page ?? "?")}
-                        </span>
-                      ) : null}{" "}
-                      {sim ? <span className="badge sim">OBD · sim</span> : null}{" "}
-                      <small>{id.slice(0, 8)}…</small>
+                    <li
+                      key={e.seq}
+                      id={`ev-${e.seq}`}
+                      className={isActive ? "active" : seen ? "seen" : "upcoming"}
+                    >
+                      <p className="ev-head"><strong>{headline}</strong></p>
+                      <p>
+                        {ai ? <span className="badge ai">AI-extracted: {ai}</span> : null}{" "}
+                        {agreement ? <span className="badge ai">{agreement}</span> : null}{" "}
+                        {dsp ? <span className="badge dsp">Signal processing, not AI</span> : null}{" "}
+                        {etype === "manual_page" ? (
+                          <span className="badge manual">
+                            manual p.{String(specRanges[0]?.page ?? "?")}
+                          </span>
+                        ) : null}{" "}
+                        {sim ? <span className="badge sim">OBD · sim</span> : null}{" "}
+                        <small className="t-raw">{etype} · {id.slice(0, 8)}… · seq {e.seq}</small>
+                      </p>
+                      {specRanges.length > 0 ? (
+                        <table className="specs">
+                          <thead>
+                            <tr><th>Book check</th><th>Healthy range</th></tr>
+                          </thead>
+                          <tbody>
+                            {specRanges.map((s, i) => (
+                              <tr key={i}>
+                                <td>{(s.parameter ?? "").replace(/_/g, " ")}</td>
+                                <td>{s.min}–{s.max} {s.units ?? ""} (p.{s.page ?? "?"})</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      ) : null}
+                      {typeof p.note === "string" ? <p><small>{p.note}</small></p> : null}
                       {overlays.length > 0 ? (
                         <SamOverlay
+                          imageUrl={imageUrl}
                           width={w}
                           height={h}
                           masks={masks}
-                          label={`Recorded overlay (${masks.length} masks; photo bytes are not bundled)`}
+                          labels={compLabels}
+                          label={
+                            imageUrl
+                              ? `Recorded overlay (${masks.length} masks)`
+                              : `Recorded overlay (${masks.length} masks; photo bytes are not bundled)`
+                          }
                         />
                       ) : null}
                     </li>

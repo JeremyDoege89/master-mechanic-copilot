@@ -468,4 +468,25 @@ def find_recorded_wonder_review(session: Session) -> dict | None:
     return found
 
 
+def find_current_report_review(session: Session) -> dict | None:
+    """Latest stored review still current, if any (M6 finding #11).
+
+    A ``report_built`` review covers the log head while no newer
+    diagnostic event exists: any non-``report_built`` event after it
+    (a test result, observation, evidence, ack, ...) invalidates it and
+    the next build spends a fresh Wonder call. ``llm_call``/``sam_call``
+    audit records count as new content too (conservative: at most one
+    extra call, never a stale reuse).
+    """
+    stored: dict | None = None
+    for event in session.store.iter_replay():
+        if event.get("type") == "report_built":
+            review = (event.get("payload") or {}).get("wonder_review")
+            if isinstance(review, dict) and review:
+                stored = review
+        else:
+            stored = None
+    return stored
+
+
 __all__ = ["blobs"]

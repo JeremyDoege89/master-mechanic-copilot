@@ -69,4 +69,17 @@ class SafetyGateCardTest {
         assertEquals(3, SafetyGates.LEVEL_LABELS.size)
         assertTrue(SafetyGates.levelLabel("L1") != SafetyGates.levelLabel("L3"))
     }
+
+    @Test
+    fun presentChecklistTakesChecklistPath() {
+        assertEquals(SafetyGates.AckPath.CHECKLIST, SafetyGates.ackPath(true))
+    }
+
+    @Test
+    fun missingChecklistTakesExplicitOfflinePath() {
+        // M6 finding #8: an empty/missing checklist must route to the
+        // explicit offline ack, never to a gateReady-gated confirm (which
+        // deadlocks because gateReady is false on empty items).
+        assertEquals(SafetyGates.AckPath.OFFLINE_EXPLICIT, SafetyGates.ackPath(false))
+    }
 }

@@ -1,5 +1,5 @@
 {
-  "audit_sha256": "c5d8bd05b9663cf0c8edaa1c15128868aa3cb525b50fdc9c092f2c1c5835c7ae",
+  "audit_sha256": "33f3fbc9f4818967e403fde0519416be38f9a98cce202c9f4cec23234442d811",
   "captured": "record_demo_cache.py owner run",
   "captured_ts": "2026-10-29T08:27:41.822430+00:00",
   "cost_usd": 0.10931199999999999,
@@ -25,7 +25,7 @@
         "effort": "xhigh"
       }
     },
-    "request_sha256": "73a04f63602ba8af7d4dcdd9d705d352aa58ee02f6a02d3b420ff480ab5cc0a4",
+    "request_sha256": "47e09396b513d44bf82902e6215e3fa5924cea6e92be169f312e413e6f1fcbc4",
     "usage": {
       "input_tokens": 13608,
       "input_tokens_details": {

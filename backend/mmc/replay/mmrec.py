@@ -33,6 +33,9 @@ def sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+BLOB_PREFIX = "blobs/"
+
+
 def create(
     members: dict[str, bytes],
     meta: dict,
@@ -43,7 +46,9 @@ def create(
 
     ``date_time`` fixes the zip member timestamps (M6B demo bundles pass a
     constant so two consecutive runs are byte-identical); None keeps the
-    previous behaviour (writer's current time).
+    previous behaviour (writer's current time). Extra members beyond the
+    three data members (e.g. ``blobs/<sha256>`` photo bytes) ride along
+    and are covered by the manifest hash list.
     """
     import io
 
@@ -53,9 +58,15 @@ def create(
         "events.jsonl": members.get("events.jsonl", b""),
         "meta.json": json.dumps(full_meta, sort_keys=True).encode(),
     }
+    extras = sorted(
+        name for name in members
+        if name not in blobs and name != MANIFEST
+    )
+    for name in extras:
+        blobs[name] = members[name]
     manifest = {
         "format": FORMAT,
-        "files": {name: sha256(blobs[name]) for name in DATA_MEMBERS},
+        "files": {name: sha256(blobs[name]) for name in [*DATA_MEMBERS, *extras]},
     }
 
     def _writestr(zf: zipfile.ZipFile, name: str, data: bytes) -> None:
@@ -68,7 +79,7 @@ def create(
 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        for name in DATA_MEMBERS:
+        for name in [*DATA_MEMBERS, *extras]:
             _writestr(zf, name, blobs[name])
         _writestr(zf, MANIFEST, json.dumps(manifest, sort_keys=True).encode())
     return buf.getvalue()
@@ -113,7 +124,23 @@ def verify_members(members: dict[str, bytes], label: str = "<memory>") -> dict:
             raise MmrecError(f"{label}: missing member {name}")
         if expected.get(name) != sha256(members[name]):
             raise MmrecError(f"{label}: hash mismatch on {name}")
+    for name, want in expected.items():
+        if name in DATA_MEMBERS or name == MANIFEST:
+            continue
+        if name not in members:
+            raise MmrecError(f"{label}: missing member {name}")
+        if want != sha256(members[name]):
+            raise MmrecError(f"{label}: hash mismatch on {name}")
+        if name.startswith(BLOB_PREFIX):
+            digest = name[len(BLOB_PREFIX):]
+            if digest != want or digest != sha256(members[name]):
+                raise MmrecError(f"{label}: blob name/hash mismatch on {name}")
     return manifest
+
+
+def blob_members(members: dict[str, bytes]) -> dict[str, bytes]:
+    """Bundle-embedded blobs (``blobs/<sha256>`` members)."""
+    return {n: b for n, b in members.items() if n.startswith(BLOB_PREFIX)}
 
 
 def verify_bytes(data: bytes, label: str = "<memory>") -> dict:

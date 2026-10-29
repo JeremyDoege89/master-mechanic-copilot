@@ -63,9 +63,11 @@ WONDER_OUTPUT_TOKENS = 800
 
 
 def _scan_banned(obj: Any, path: str = "$") -> None:
+    # Finding #3: keys are lower-cased before the ban check, so
+    # {"Posterior": 0.92} cannot slip past the probability ban.
     if isinstance(obj, dict):
         for key, value in obj.items():
-            if key in BANNED_KEYS:
+            if str(key).lower() in BANNED_KEYS:
                 raise ValueError(f"Wonder output sets probability field {path}.{key}: refusing")
             _scan_banned(value, f"{path}.{key}")
     elif isinstance(obj, list):
@@ -168,6 +170,12 @@ def attach_review(report: dict, audit: dict, client: MetaClient) -> dict:
     except (BudgetExceeded, MetaClientError, NoCachedResponse) as e:
         report["wonder_review"] = None
         report["wonder_unavailable"] = f"AI review unavailable: {e}"
+        return report
+    except (ValueError, jsonschema.ValidationError) as e:
+        # Finding #3: a banned-key or schema-invalid Wonder reply maps to
+        # null + the unavailable line — it never kills the report build.
+        report["wonder_review"] = None
+        report["wonder_unavailable"] = f"AI review unavailable: invalid review: {e}"
         return report
     report["wonder_review"] = review
     report["wonder_unavailable"] = None

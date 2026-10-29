@@ -154,7 +154,10 @@ def test_keyframe_replay_session_is_read_only(client, tmp_path):
     r = client.post("/sessions", json={"user_level": "L1", "tools": [], "mode": "replay"})
     assert r.status_code == 200, r.text
     sid = r.json()["session_id"]
-    blob = _upload(client, sid)
+    # Blobs are global/content-addressed: upload via a writable session
+    # (POST /blobs is 409 on replays per M6 finding #2) and reference it.
+    live = client.post("/sessions", json={"user_level": "L1", "tools": [], "mode": "sim"})
+    blob = _upload(client, live.json()["session_id"])
     r = client.post(f"/sessions/{sid}/vision/keyframe", json={"blob_ref": blob})
     assert r.status_code == 409, r.text
     assert _event_types(tmp_path, sid) == ["session_started"]

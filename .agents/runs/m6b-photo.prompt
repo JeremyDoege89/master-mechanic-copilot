@@ -1,0 +1,12 @@
+Small follow-up to the UX pass (backend + web, nothing else running in parallel):
+1. Add GET /sessions/{id}/blobs/{sha256} that streams a blob ONLY if that session's event log references it (evidence
+   blob_ref/content_hash); 404 otherwise, with correct content type, so the public site can't be used to fetch
+   arbitrary blobs. Test both cases, including a replay session from a bundle.
+2. Include the demo engine-bay photo (backend/tests/fixtures/images/engine_bay_02.jpg, CC0, see its SOURCE.txt) in the
+   two demo bundles' blobs and reference it from the image evidence_added payload (blob_ref + content_hash), and make
+   bundle replay restore bundle blobs into the blob store. Regenerate the bundles offline with
+   `backend/.venv/bin/python scripts/make_demo_bundle.py` (re-key the demo cache offline if the audit bytes change, as
+   the last job did; recorded live outputs untouched) and confirm `--check` and replay_check pass.
+3. Wire imageUrl in web/src (SamOverlay gets the photo; overlay scaled to the photo's natural size).
+Run the backend suite (< 3 min), replay_check and the web build (npm ci --offline, npm run build) until green. Do not
+commit. Foreground only. Finish with files changed and test counts.

@@ -3,9 +3,6 @@ import BudgetBadge from "./components/BudgetBadge";
 import Replay from "./pages/Replay";
 import Report from "./pages/Report";
 
-const JUDGE_FIXTURE_NOTE =
-  "Judge demo: a recorded-style investigation of a simulated Ford with a vacuum leak. Labelled sim — a second coil demo and real Ford bundles load the same way.";
-
 function themeInit(): string | null {
   try {
     return window.localStorage.getItem("mmc-theme");
@@ -17,7 +14,7 @@ function themeInit(): string | null {
 export default function App() {
   const params = new URLSearchParams(window.location.search);
   const judge = params.get("judge") === "1";
-  const [page, setPage] = useState<"replay" | "report">(judge ? "replay" : "replay");
+  const [page, setPage] = useState<"replay" | "report">("replay");
   const [reportId, setReportId] = useState<string | undefined>(undefined);
   const [theme, setTheme] = useState<string | null>(null);
 
@@ -44,19 +41,42 @@ export default function App() {
 
   return (
     <main>
-      <h1>Master Mechanic Copilot</h1>
-      <BudgetBadge />
-      {judge ? <p>{JUDGE_FIXTURE_NOTE}</p> : null}
-      <nav>
-        <button onClick={() => setPage("replay")}>Replay</button>
-        <button onClick={() => setPage("report")}>Report</button>
-        <button onClick={toggleTheme} aria-label="Toggle colour theme">
-          Theme: {theme ?? "system"}
-        </button>
-      </nav>
+      <header className="topbar">
+        <div className="brand">
+          <span className="brand-mark" aria-hidden="true">MMC</span>
+          <span className="brand-text">
+            <strong>Master Mechanic Copilot</strong>
+            <small>{judge ? "Judge demo · simulated Ford, real AI outputs" : "Vehicle diagnosis copilot"}</small>
+          </span>
+        </div>
+        <div className="topbar-right">
+          <BudgetBadge />
+          <nav aria-label="Pages">
+            <button
+              onClick={() => setPage("replay")}
+              aria-current={page === "replay"}
+              disabled={page === "replay"}
+            >
+              Replay
+            </button>
+            <button
+              onClick={() => setPage("report")}
+              aria-current={page === "report"}
+              disabled={page === "report" || !reportId}
+              title={reportId ? `Open report ${reportId.slice(0, 8)}` : "Load a session first"}
+            >
+              Report{reportId ? "" : ""}
+            </button>
+            <button onClick={toggleTheme} aria-label="Toggle colour theme">
+              Theme: {theme ?? "system"}
+            </button>
+          </nav>
+        </div>
+      </header>
       {page === "replay" ? (
         <Replay
           autoJudge={judge}
+          onLatestReport={(id) => setReportId(id ?? undefined)}
           onReport={(id) => {
             setReportId(id);
             setPage("report");

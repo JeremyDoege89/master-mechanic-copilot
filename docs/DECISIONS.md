@@ -2,6 +2,24 @@
 
 Newest first. Each entry: date, decision, why. Add one whenever scope, a dependency or an architecture choice changes.
 
+## 2026-10-29 — M6 review findings #1–#12 fixed (backend + Android; web/parallel job excluded)
+
+All twelve `.agents/reviews/M6.md` findings fixed in `backend/` + `android/` only (`web/src`, `backend/mmc/report/templates/` untouched — finding #5's web half belongs to the parallel job; the backend pins the upload-mode sequence with `test_f5_public_upload_session_bundle_flow`).
+
+- #1 `POST /events` now allowlists client-postable types (`safety_ack`, `observation_added`, `evidence_added`, `asr_segment`, `test_requested`); engine/privileged types are 403. `scripts/make_demo_bundle.py` appends its `adapter_fingerprinted` via the registry instead (identical bytes), and the `report_built` setup in `test_demo_bundles.py` does the same.
+- #2 `post_event`, `post_test_result`, `upload_blob` in `routes.py` 409 on `mode=="replay"`, mirroring the vision/upload guard. One fallout: `test_keyframe_replay_session_is_read_only` now uploads its fixture blob via a writable session (blobs are global).
+- #3 `attach_review` maps `ValueError`/`jsonschema.ValidationError` to null + unavailable (never 500s; route guards too); `_scan_banned` lower-cases keys; `wonder_review.json` gains `additionalProperties:false` on review + gap objects.
+- #4 `ClearToken` carries the backend token string + session id + expiry; `Allowlist`/`Elm327Driver.query` reject blank/wrong-session/expired tokens; `SessionClient` gains `requestClearCodes`/`confirmClearCodes` (+ pure map builders). Mode 04 stays unreachable without the gated backend flow.
+- #6 `runner.verify_event_chain` verifies inner envelope chains on bundle replay (legacy slim rows skip); context restore (`user_level`/tools/vehicle) was already in place and is now pinned by a ≥2-result full-state test.
+- #7 report safety notes derive from actual `safety_ack`/`test_performed` log entries (also fixing the `- {"none"}` precedence bug).
+- #8 Live screen one-tap ack deleted (points at the test card); offline fallback is an explicit `ackGate` routed by the pure `SafetyGates.ackPath` policy.
+- #9 per-session `asyncio.Lock` across check+appends in `post_test_result` and the CSV derived loop (threaded WS-connected test proves one 200 + one 409).
+- #10 SRS trigger restricted to `B00xx` + known `B0100` (existing contract); generic `B1234` keeps diagnosing, `safety:srs` flag path unchanged.
+- #11 `report_built` carries `log_head_hash`; rebuilds reuse the stored review while no newer diagnostic event exists (`find_current_report_review`), else spend one fresh call.
+- #12 `verbal_band` rounds half-up (`floor(p*10+0.5)`, float-epsilon); L1 trace text uses the plain-language `OUTCOME_L1` map with a slug-free fallback.
+- Demo bundles regenerated (event diff verified: only the Wonder `llm_call` request/sha from the reworded audit + new `log_head_hash`). The Wonder audit drift required an offline re-key of the two committed `demo_cache/wonder_*.json` request shas (recorded outputs untouched, still schema-valid; scratch script at `/tmp/rekey_wonder_cache.py`).
+- Regression net: new `backend/tests/test_m6_review.py` (18 tests), `ClearTokenTest.kt` (5), `+2` ack-path tests, `+2` clear-codes body tests. Backend suite 412 pass in ~2:15; Android `testDebugUnitTest` + `assembleDebug` green offline.
+
 ## 2026-10-29 — M6B bundle infrastructure + web pass (bundles owner-built next)
 
 Plan `.agents/plans/M6B.md` implemented in order with the approved

@@ -14,6 +14,11 @@ from typing import Any
 from mmc import sessions as sess
 from mmc._paths import repo_fixtures_dir
 from mmc.replay import mmrec
+from mmc.store.event_store import (
+    GENESIS_PREV_HASH,
+    event_hash,
+    payload_hash,
+)
 
 # Shipped fixtures (judge demo + CI). Modal seeds these under DATA_DIR (§5);
 # the repo copy (via MMC_REPO_ROOT) is the fallback for local dev.
@@ -31,6 +36,46 @@ def _row_payload(row: dict) -> dict:
     if isinstance(payload, dict):
         return dict(payload)
     return {k: v for k, v in row.items() if k not in _RESERVED_ROW_KEYS}
+
+
+_ENVELOPE_KEYS = frozenset(
+    {"seq", "ts", "type", "payload", "payload_sha256", "prev_hash", "hash"}
+)
+
+
+def verify_event_chain(rows: list[dict], label: str = "<memory>") -> None:
+    """Verify the hash chain carried inside enveloped bundle rows.
+
+    Finding #6: ``mmrec`` manifest hashes only prove the zip members are
+    self-consistent — a hand-crafted bundle can carry a fabricated gated
+    ``test_result`` under a fresh valid manifest. When rows carry the
+    full event envelope (``payload_sha256``/``prev_hash``/``hash``), the
+    inner chain must verify: seq continuity from 1, payload hashes,
+    prev-hash linkage from genesis, and recomputed event hashes.
+    Legacy slim rows (no envelope fields at all) skip verification.
+    Raises ``mmrec.MmrecError`` on any break.
+    """
+    enveloped = [row for row in rows if _ENVELOPE_KEYS <= set(row)]
+    if not enveloped:
+        return
+    if len(enveloped) != len(rows):
+        raise mmrec.MmrecError(f"{label}: mixed enveloped and slim event rows")
+    prev = GENESIS_PREV_HASH
+    for i, row in enumerate(rows, start=1):
+        if row.get("seq") != i:
+            raise mmrec.MmrecError(f"{label}: event seq break at row {i}")
+        payload = row.get("payload")
+        if not isinstance(payload, dict):
+            raise mmrec.MmrecError(f"{label}: event {i} has no payload object")
+        if row.get("payload_sha256") != payload_hash(payload):
+            raise mmrec.MmrecError(f"{label}: payload hash mismatch on event {i}")
+        if row.get("prev_hash") != prev:
+            raise mmrec.MmrecError(f"{label}: chain link broken on event {i}")
+        if row.get("hash") != event_hash(
+            row["seq"], row["ts"], row["type"], row["payload_sha256"], row["prev_hash"]
+        ):
+            raise mmrec.MmrecError(f"{label}: event hash mismatch on event {i}")
+        prev = row["hash"]
 
 
 def fold_rows(session: sess.Session, rows: list[dict]) -> int:
@@ -80,11 +125,22 @@ def replay_bundle_bytes(
     vehicle = bundle_meta.get("vehicle")
     if not isinstance(vehicle, dict):
         vehicle = None
+    rows = mmrec.event_rows(members)
+    verify_event_chain(rows, label)
+    # Bundle-embedded blobs (demo photo bytes) land in the blob store so
+    # the evidence-scoped GET can serve them on the replay session.
+    from mmc.store import blobs as blob_store
+
+    for name, data in mmrec.blob_members(members).items():
+        digest = name[len(mmrec.BLOB_PREFIX):]
+        if digest != mmrec.sha256(data):
+            raise mmrec.MmrecError(f"{label}: blob name/hash mismatch on {name}")
+        blob_store.put(data)
     registry = sess.get_registry()
     session = registry.create(
         user_level=user_level, tools=list(tools), mode="replay", vehicle=vehicle
     )
-    fold_rows(session, mmrec.event_rows(members))
+    fold_rows(session, rows)
     return session
 
 

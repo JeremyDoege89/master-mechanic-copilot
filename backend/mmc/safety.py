@@ -125,13 +125,25 @@ _SAFETY_FLAG_TEXT = {
 OVERHEAT_ECT_C = 110.0
 
 
+# Finding #10: only SRS/airbag body codes stop-and-see-a-pro (SPEC §8),
+# never the whole B range. SAE B00xx are airbag-loop codes; B0100 is kept
+# as a known Ford restraint code (committed test contract). Anything else
+# body-side (e.g. generic B1234) keeps diagnosing; reporters who suspect
+# SRS use the safety:srs user flag, which still triggers via _SAFETY_FLAG_TEXT.
+_SRS_EXACT_CODES = frozenset({"B0100"})
+
+
+def _is_srs_code(code: str) -> bool:
+    return code.startswith("B00") or code in _SRS_EXACT_CODES
+
+
 def _dtc_triggers(dtcs: list[str]) -> list[str]:
     triggers = []
     for raw in dtcs:
         code = str(raw).upper().strip()
         if not code:
             continue
-        if code.startswith("B"):
+        if _is_srs_code(code):
             triggers.append(
                 f"SRS code {code} (airbag system — never probe SRS parts, see a professional)."
             )

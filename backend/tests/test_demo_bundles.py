@@ -249,11 +249,17 @@ def test_report_reuses_recorded_wonder_review(client_no_keys):
     r = client_no_keys.post("/sessions", json={"user_level": "L1", "tools": [], "mode": "live"})
     sid = r.json()["session_id"]
     # A previous (recorded) report build embedded its review in report_built.
-    r = client_no_keys.post(
-        f"/sessions/{sid}/events",
-        json={"type": "report_built", "payload": {"report_id": "recorded", "wonder_review": review}},
+    # Appended via the registry: POST /events 403s engine-owned types
+    # (M6 finding #1); the folded state is identical.
+    from mmc import sessions as sess_mod
+
+    recorded_session = sess_mod.get_registry().get(sid)
+    assert recorded_session is not None
+    sess_mod.get_registry().append(
+        recorded_session,
+        "report_built",
+        {"report_id": "recorded", "wonder_review": review},
     )
-    assert r.status_code == 200, r.text
     rep = client_no_keys.post(f"/sessions/{sid}/report")
     assert rep.status_code == 200, rep.text
     body = client_no_keys.get(f"/reports/{rep.json()['report_id']}.json").json()

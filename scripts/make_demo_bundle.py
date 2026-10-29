@@ -530,17 +530,24 @@ def _drive_to_wonder_context(
     sid = created["session_id"]
 
     # 2. Genuine-personality adapter fingerprint.
-    post(
-        f"/sessions/{sid}/events",
+    # Appended via the registry, not POST /events: the events route only
+    # accepts client-postable types (M6 finding #1) and 403s engine-owned
+    # types such as adapter_fingerprinted. Same payload, same sequence
+    # position, same bytes as the old route call (no WS listeners here,
+    # so the broadcast was already a no-op).
+    from mmc import sessions as sess_mod
+
+    _demo_session = sess_mod.get_registry().get(sid)
+    assert _demo_session is not None
+    sess_mod.get_registry().append(
+        _demo_session,
+        "adapter_fingerprinted",
         {
-            "type": "adapter_fingerprinted",
-            "payload": {
-                "profile": "genuine",
-                "protocol": "CAN 11/500",
-                "multi_pid": True,
-                "headers": True,
-                "banner": "ELM327 v1.5",
-            },
+            "profile": "genuine",
+            "protocol": "CAN 11/500",
+            "multi_pid": True,
+            "headers": True,
+            "banner": "ELM327 v1.5",
         },
     )
 
@@ -908,6 +915,25 @@ def build_bundle(
             import sim_scenarios as sim_mod
 
             transcript = synth_transcript(sim, sim_mod.snapshot(sim))
+            # Demo engine-bay photo (CC0, see fixtures/images/SOURCE.txt):
+            # the keyframe evidence already references these bytes via its
+            # blob_ref/content_hash; embedding them lets bundle replay
+            # restore the blob store and serve the photo to the viewer.
+            image_bytes = (IMAGES_DIR / ENGINE_IMAGE).read_bytes()
+            image_sha = hashlib.sha256(image_bytes).hexdigest()
+            keyframe_evidence = [
+                e["payload"]
+                for e in session.store.iter_replay()
+                if e.get("type") == "evidence_added"
+                and (e.get("payload") or {}).get("type") == "image"
+            ]
+            assert keyframe_evidence, f"no keyframe evidence for {scenario_key}"
+            assert keyframe_evidence[0].get("content_hash") == image_sha, (
+                scenario_key, keyframe_evidence[0].get("content_hash"), image_sha,
+            )
+            assert keyframe_evidence[0].get("blob_ref") == f"blobs/{image_sha}", (
+                scenario_key, keyframe_evidence[0].get("blob_ref"),
+            )
             vehicle = dict(session.meta.get("vehicle") or {})
             meta = {
                 "scenario": sim,
@@ -924,7 +950,11 @@ def build_bundle(
                 "tests": summary["performed"],
             }
             bundle = mmrec.create(
-                {"transcript.jsonl": transcript, "events.jsonl": events_raw},
+                {
+                    "transcript.jsonl": transcript,
+                    "events.jsonl": events_raw,
+                    f"blobs/{image_sha}": image_bytes,
+                },
                 meta,
                 date_time=BUNDLE_DATE_TIME,
             )
