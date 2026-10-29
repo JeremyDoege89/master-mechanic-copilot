@@ -23,9 +23,9 @@ echo "smoke: budget before"
 code=$(get /budget /tmp/mmc-smoke-budget-0.json)
 [ "$code" = "200" ] || { echo "smoke FAIL: /budget -> $code"; exit 1; }
 
-echo "smoke: judge replay (sim-healthy.mmrec)"
+echo "smoke: judge replay (sim-vacuum-leak.mmrec)"
 code=$(curl -fsS -o /tmp/mmc-smoke-replay.json -w "%{http_code}" \
-  -H 'Content-Type: application/json' -d '{"fixture":"sim-healthy.mmrec"}' "$URL/replay")
+  -H 'Content-Type: application/json' -d '{"fixture":"sim-vacuum-leak.mmrec"}' "$URL/replay")
 [ "$code" = "200" ] || { echo "smoke FAIL: /replay -> $code"; cat /tmp/mmc-smoke-replay.json; exit 1; }
 
 echo "smoke: state + report"

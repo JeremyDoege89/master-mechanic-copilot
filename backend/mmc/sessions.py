@@ -448,4 +448,24 @@ def load_report(registry: SessionRegistry, report_id: str) -> dict | None:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def find_recorded_wonder_review(session: Session) -> dict | None:
+    """Latest ``wonder_review`` embedded in a ``report_built`` event, if any.
+
+    M6B §1.2: demo bundles ship a recorded senior review inside their
+    ``report_built`` event. Replaying the bundle folds that event, so a
+    report rebuilt where live Wonder is skipped (public replay mode, or a
+    keyless replay) can serve the recorded review at $0 instead of
+    "AI review unavailable".
+    """
+    found: dict | None = None
+    for event in session.store.iter_replay():
+        if event.get("type") != "report_built":
+            continue
+        payload = event.get("payload") or {}
+        review = payload.get("wonder_review")
+        if isinstance(review, dict) and review:
+            found = review
+    return found
+
+
 __all__ = ["blobs"]

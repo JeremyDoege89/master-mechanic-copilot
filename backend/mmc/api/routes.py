@@ -429,8 +429,24 @@ async def build_report(session_id: str):
             except (MetaClientError, NoCachedResponse) as e:
                 report["wonder_review"] = None
                 report["wonder_unavailable"] = f"AI review unavailable: {e}"
+    # M6B §1.2: where live Wonder is skipped or fails, serve the recorded
+    # review folded in with a demo bundle ($0) instead of "unavailable".
+    if report.get("wonder_review") is None:
+        recorded = sess.find_recorded_wonder_review(session)
+        if recorded is not None:
+            report["wonder_review"] = recorded
+            report["wonder_unavailable"] = None
     sess.save_report(registry, report)
-    registry.append(session, "report_built", {"report_id": report["report_id"]})
+    # The review rides in the event so replays rebuild it with no live call.
+    registry.append(
+        session,
+        "report_built",
+        {
+            "report_id": report["report_id"],
+            "wonder_review": report.get("wonder_review"),
+            "wonder_unavailable": report.get("wonder_unavailable"),
+        },
+    )
     await _broadcast(session.id)
     return {"report_id": report["report_id"], "url": f"/reports/{report['report_id']}.json"}
 

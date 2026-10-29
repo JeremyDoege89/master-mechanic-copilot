@@ -508,11 +508,15 @@ async def vision_keyframe(session_id: str, body: KeyframeBody, request: Request 
                         registry.append(session, record.get("kind", "llm_call"), record)
                     except Exception:
                         pass
+    # M6B: overlays ride the evidence so replays render the recorded
+    # masks/boxes from history (the photo bytes themselves are not
+    # bundled). ``evidence`` tolerates the extra key like ``spec_ranges``.
     evidence = {
         "evidence_id": evidence_id,
         "type": "image",
         "blob_ref": body.blob_ref,
         "content_hash": content_hash,
+        "overlays": overlays,
         "ts": sess._utc_now(),
     }
     registry.append(session, "evidence_added", evidence)

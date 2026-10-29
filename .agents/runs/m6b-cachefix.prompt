@@ -1,0 +1,9 @@
+Live run of scripts/record_demo_cache.py: the Spark Open second opinion recorded fine ($0.0111, 10 components), then:
+  record_demo_cache.py:114 record_wonder -> make_demo_bundle.build_bundle -> require_demo_cache raises
+  DemoCacheMissing (missing: wonder_vacuum-leak.json, wonder_coil-unplugged.json)
+Recording Wonder needs the bundle built WITHOUT the Wonder review (the review's input is the finished report), but
+build_bundle requires the full cache. Fix: let build_bundle run in a recording mode that requires only the non-Wonder
+cache entries and stops before the report's Wonder call (or builds the report with wonder pending), hands the report +
+audit context to record_wonder, and the normal mode still requires everything. Make record_demo_cache.py skip entries
+already recorded (the second opinion is on disk now) so a rerun only makes the missing calls. Add an offline test of
+the recording path with a stub Wonder transport. Run the backend suite until green. Do not commit. Foreground only.

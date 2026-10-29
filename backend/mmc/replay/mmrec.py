@@ -33,8 +33,18 @@ def sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def create(members: dict[str, bytes], meta: dict) -> bytes:
-    """Build a bundle zip from member bytes (meta merged with the format tag)."""
+def create(
+    members: dict[str, bytes],
+    meta: dict,
+    *,
+    date_time: tuple[int, int, int, int, int, int] | None = None,
+) -> bytes:
+    """Build a bundle zip from member bytes (meta merged with the format tag).
+
+    ``date_time`` fixes the zip member timestamps (M6B demo bundles pass a
+    constant so two consecutive runs are byte-identical); None keeps the
+    previous behaviour (writer's current time).
+    """
     import io
 
     full_meta = {"format": FORMAT, **meta}
@@ -47,11 +57,20 @@ def create(members: dict[str, bytes], meta: dict) -> bytes:
         "format": FORMAT,
         "files": {name: sha256(blobs[name]) for name in DATA_MEMBERS},
     }
+
+    def _writestr(zf: zipfile.ZipFile, name: str, data: bytes) -> None:
+        if date_time is None:
+            zf.writestr(name, data)
+            return
+        info = zipfile.ZipInfo(name, date_time=date_time)
+        info.compress_type = zipfile.ZIP_DEFLATED
+        zf.writestr(info, data)
+
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for name in DATA_MEMBERS:
-            zf.writestr(name, blobs[name])
-        zf.writestr(MANIFEST, json.dumps(manifest, sort_keys=True).encode())
+            _writestr(zf, name, blobs[name])
+        _writestr(zf, MANIFEST, json.dumps(manifest, sort_keys=True).encode())
     return buf.getvalue()
 
 

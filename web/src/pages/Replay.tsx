@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   API_BASE,
   apiGet,
@@ -10,13 +10,58 @@ import {
   type SessionState,
 } from "../api";
 import HypothesisChart from "../components/HypothesisChart";
+import SamOverlay from "../components/SamOverlay";
 
 interface Props {
   autoJudge?: boolean;
   onReport?: (reportId: string) => void;
 }
 
-const JUDGE_FIXTURE = "sim-healthy.mmrec";
+const JUDGE_FIXTURE = "sim-vacuum-leak.mmrec";
+const COIL_FIXTURE = "sim-coil-unplugged.mmrec";
+
+const JUDGE_HERO_1 =
+  "This is a recorded-style investigation of a simulated Ford with a vacuum leak.";
+const JUDGE_HERO_2 =
+  "Every suspect probability is computed by deterministic code — the AI only reads photos, manuals and sounds; press play and watch it converge.";
+
+const JUDGE_CHECKLIST = [
+  "Press Play — the fuel-trim evidence moves the air-leak suspect past 0.8.",
+  "Open its trace point — the likelihood ratio and expected-vs-measured appear.",
+  "Keyframe in the evidence drawer — recorded overlay plus corroborated badge.",
+  "Manual-PDF badge — the book range flips a voltage outcome.",
+  "Build report — conclusion, AI review, reproducibility hashes, $0 spend.",
+];
+
+const GLYPH: Record<string, string> = {
+  session_started: "●",
+  adapter_fingerprinted: "◆",
+  evidence_added: "■",
+  observation_added: "○",
+  test_requested: "▷",
+  safety_ack: "✓",
+  test_performed: "▶",
+  test_result: "◀",
+  hypothesis_proposed: "?",
+  posterior_updated: "~",
+  llm_call: "✎",
+  sam_call: "▣",
+  asr_segment: "♪",
+  codes_clear_requested: "!",
+  codes_cleared: "!",
+  report_built: "★",
+};
+
+function shortLabel(e: SessionEvent): string {
+  const p = e.payload as Record<string, unknown>;
+  const ref =
+    (p.test_ref as string | undefined) ??
+    (p.test_id as string | undefined) ??
+    (p.gate as string | undefined) ??
+    (p.evidence_id as string | undefined)?.slice(0, 8) ??
+    "";
+  return ref ? `${e.type} ${ref}` : e.type;
+}
 
 function instructions(
   t: Pick<NextTest, "instructions_by_level">,
@@ -30,44 +75,74 @@ function instructions(
   );
 }
 
+interface OverlayMask {
+  concept?: string;
+  used_concept?: string;
+  found?: boolean;
+  svg_path?: string;
+  box?: { x1: number; y1: number; x2: number; y2: number };
+}
+
+function overlayExtent(masks: OverlayMask[]): { w: number; h: number } {
+  let w = 640;
+  let h = 480;
+  for (const m of masks) {
+    if (m.box) {
+      w = Math.max(w, m.box.x2 + 4);
+      h = Math.max(h, m.box.y2 + 4);
+    }
+  }
+  return { w, h };
+}
+
 export default function Replay({ autoJudge, onReport }: Props) {
   const [sessionId, setSessionId] = useState("");
   const [typedId, setTypedId] = useState("");
   const [events, setEvents] = useState<SessionEvent[]>([]);
   const [cursor, setCursor] = useState(0);
   const [maxSeq, setMaxSeq] = useState(0);
-  const [speed, setSpeed] = useState(1);
+  const [speed, setSpeed] = useState(2);
   const [playing, setPlaying] = useState(false);
   const [level, setLevel] = useState<Level>("L1");
   const [state, setState] = useState<SessionState | null>(null);
   const [status, setStatus] = useState(
-    autoJudge ? "Loading judge demo…" : "Load a session to begin.",
+    autoJudge ? "Judge demo ready." : "Load a session to begin.",
   );
   const [reportId, setReportId] = useState<string | null>(null);
-  const judged = useRef(false);
+  const [drawerOpen, setDrawerOpen] = useState(false);
 
-  const loadSession = useCallback(async (id: string, replaySpeed: number) => {
-    setSessionId(id);
-    setSpeed(replaySpeed);
-    const ev = await apiGet<{ events: SessionEvent[] }>(`/sessions/${id}/events`);
-    setEvents(ev.events);
-    const max = ev.events.length > 0 ? ev.events[ev.events.length - 1].seq : 0;
-    setMaxSeq(max);
-    setCursor(max);
-    setReportId(null);
-    setStatus(`Session ${id.slice(0, 8)}… loaded (${ev.events.length} events).`);
-  }, []);
+  const loadSession = useCallback(
+    async (id: string, replaySpeed: number, startAtZero: boolean) => {
+      setSessionId(id);
+      setSpeed(replaySpeed);
+      const ev = await apiGet<{ events: SessionEvent[] }>(`/sessions/${id}/events`);
+      setEvents(ev.events);
+      const max = ev.events.length > 0 ? ev.events[ev.events.length - 1].seq : 0;
+      setMaxSeq(max);
+      setCursor(startAtZero ? 0 : max);
+      setPlaying(startAtZero);
+      setReportId(null);
+      setStatus(`Session ${id.slice(0, 8)}… loaded (${ev.events.length} events).`);
+    },
+    [],
+  );
 
-  useEffect(() => {
-    if (autoJudge && !judged.current) {
-      judged.current = true;
-      apiPost<{ session_id: string; speed: number }>("/replay", {
-        fixture: JUDGE_FIXTURE,
-      })
-        .then((r) => loadSession(r.session_id, r.speed))
-        .catch((e) => setStatus(`Judge demo failed: ${String(e)}`));
-    }
-  }, [autoJudge, loadSession]);
+  const playFixture = useCallback(
+    async (fixture: string) => {
+      try {
+        setStatus("Loading demo…");
+        const r = await apiPost<{ session_id: string; speed: number }>("/replay", {
+          fixture,
+        });
+        await loadSession(r.session_id, 2, true);
+      } catch (e) {
+        setStatus(
+          `Demo failed (bundles are built by scripts/make_demo_bundle.py): ${String(e)}`,
+        );
+      }
+    },
+    [loadSession],
+  );
 
   useEffect(() => {
     if (!sessionId) return;
@@ -96,7 +171,7 @@ export default function Replay({ autoJudge, onReport }: Props) {
     const id = typedId.trim();
     if (!id) return;
     try {
-      await loadSession(id, 1);
+      await loadSession(id, 1, false);
     } catch (e) {
       setStatus(`Open failed: ${String(e)}`);
     }
@@ -121,7 +196,7 @@ export default function Replay({ autoJudge, onReport }: Props) {
       const r = await apiPost<{ session_id: string; speed: number }>("/replay", {
         bundle_ref: blob_ref,
       });
-      await loadSession(r.session_id, r.speed);
+      await loadSession(r.session_id, r.speed, false);
     } catch (e) {
       setStatus(`Upload failed: ${String(e)}`);
     }
@@ -143,11 +218,37 @@ export default function Replay({ autoJudge, onReport }: Props) {
   const stop = state?.stop_and_see_pro;
   const evidence = events.filter((e) => e.type === "evidence_added");
   const observations = events.filter((e) => e.type === "observation_added");
+  const vin = (state?.vehicle as { vin_last6?: string } | null | undefined)?.vin_last6;
 
   return (
     <section>
       <h2>Replay</h2>
       <p>{status}</p>
+      {autoJudge && !sessionId ? (
+        <div className="hero">
+          <p>{JUDGE_HERO_1}</p>
+          <p>{JUDGE_HERO_2}</p>
+          <p>
+            <button className="primary" onClick={() => void playFixture(JUDGE_FIXTURE)}>
+              Play the investigation
+            </button>
+          </p>
+          <ol>
+            {JUDGE_CHECKLIST.map((item) => (
+              <li key={item}>{item}</li>
+            ))}
+          </ol>
+          <p className="quiet-links">
+            <button onClick={() => void playFixture(COIL_FIXTURE)}>
+              Play the coil demo instead
+            </button>
+            <button onClick={buildReport} disabled={!sessionId}>
+              Report
+            </button>
+            <span>Full 60-second script: docs/JUDGES.md in the repo.</span>
+          </p>
+        </div>
+      ) : null}
       {!autoJudge ? (
         <div>
           <div>
@@ -177,6 +278,20 @@ export default function Replay({ autoJudge, onReport }: Props) {
 
       {sessionId ? (
         <div>
+          <div className="statusbar" aria-label="Session status">
+            <span className="mark">MMC</span>
+            <span>Vehicle {vin ? `····${vin}` : "—"}</span>
+            <span className="chip">Simulated vehicle · real AI outputs</span>
+            <span className="spacer" />
+            <span role="group" aria-label="Experience level">
+              {(["L1", "L2", "L3"] as Level[]).map((l) => (
+                <button key={l} onClick={() => setLevel(l)} disabled={level === l}>
+                  {l}
+                </button>
+              ))}
+            </span>
+          </div>
+
           <div>
             <label>
               Event seq {cursor}/{maxSeq}{" "}
@@ -205,16 +320,8 @@ export default function Replay({ autoJudge, onReport }: Props) {
             </label>
           </div>
 
-          <div role="group" aria-label="Experience level">
-            {(["L1", "L2", "L3"] as Level[]).map((l) => (
-              <button key={l} onClick={() => setLevel(l)} disabled={level === l}>
-                {l}
-              </button>
-            ))}
-          </div>
-
           {stop?.banner ? (
-            <div role="alert">
+            <div role="alert" className="pro-banner">
               <strong>Stop — see a professional.</strong>
               <p>{stop.banner}</p>
               <ul>
@@ -226,103 +333,186 @@ export default function Replay({ autoJudge, onReport }: Props) {
           ) : null}
 
           {state ? (
-            <div>
-              <h3>Suspects</h3>
-              <HypothesisChart hypotheses={state.hypotheses} />
+            <div className="replay-grid">
+              <aside className="card" aria-label="Event timeline">
+                <h3>Timeline</h3>
+                <ol className="timeline">
+                  {events.map((e) => (
+                    <li key={e.seq}>
+                      <button
+                        aria-current={e.seq === cursor}
+                        onClick={() => {
+                          setPlaying(false);
+                          setCursor(e.seq);
+                        }}
+                      >
+                        <span className="glyph" aria-hidden="true">
+                          {GLYPH[e.type] ?? "·"}
+                        </span>
+                        <span className="seq">{e.seq}</span>
+                        <span>{shortLabel(e)}</span>
+                      </button>
+                    </li>
+                  ))}
+                </ol>
+              </aside>
 
-              <h3>Next best tests</h3>
-              {state.next_tests.length === 0 ? <p>No runnable tests.</p> : null}
-              {state.next_tests.map((t) => (
-                <article key={t.kp_test_ref}>
-                  <h4>
-                    #{t.rank} {t.kp_test_ref}
-                  </h4>
-                  <p>{instructions(t, level)}</p>
-                  <p>{t.why}</p>
-                  <p>
-                    Tools: {t.required_tools.join(", ") || "none"} · Level {t.min_level} ·{" "}
-                    {t.safety_gate === "none" ? "no safety gate" : `gate: ${t.safety_gate}`}
-                  </p>
-                  {t.safety_gate !== "none" && t.gate_checklist ? (
+              <div className="card">
+                <h3>Suspects</h3>
+                <HypothesisChart hypotheses={state.hypotheses} level={level} />
+              </div>
+
+              <div className="card" aria-label="Next best tests">
+                <h3>Next best tests</h3>
+                {state.next_tests.length === 0 ? <p>No runnable tests.</p> : null}
+                {state.next_tests.map((t) => (
+                  <article key={t.kp_test_ref}>
+                    <h4>
+                      #{t.rank} {t.kp_test_ref}
+                    </h4>
+                    <p>{instructions(t, level)}</p>
+                    <p>{t.why}</p>
+                    <p>
+                      <small>
+                        EIG {t.eig_bits.toFixed(2)} bits · {t.cost.minutes} min ·{" "}
+                        Tools: {t.required_tools.join(", ") || "none"} · Level {t.min_level} ·{" "}
+                        {t.safety_gate === "none" ? "no safety gate" : `gate: ${t.safety_gate}`}
+                      </small>
+                    </p>
+                    {t.safety_gate !== "none" && t.gate_checklist ? (
+                      <details open>
+                        <summary>Safety checklist: {t.gate_checklist.title}</summary>
+                        <ul>
+                          {t.gate_checklist.items.map((item) => (
+                            <li key={item}>
+                              <label>
+                                <input type="checkbox" disabled /> {item}
+                              </label>
+                            </li>
+                          ))}
+                          {level === "L1"
+                            ? t.gate_checklist.l1_extra.map((item) => (
+                                <li key={item}>
+                                  <label>
+                                    <input type="checkbox" disabled /> {item}
+                                  </label>
+                                </li>
+                              ))
+                            : null}
+                        </ul>
+                      </details>
+                    ) : null}
                     <details>
-                      <summary>Safety checklist: {t.gate_checklist.title}</summary>
+                      <summary>Expected outcomes</summary>
                       <ul>
-                        {t.gate_checklist.items.map((item) => (
-                          <li key={item}>{item}</li>
+                        {t.expected_outcomes.map((o) => (
+                          <li key={o.outcome}>
+                            {o.outcome} (p={o.p.toFixed(2)})
+                          </li>
                         ))}
-                        {level === "L1"
-                          ? t.gate_checklist.l1_extra.map((item) => <li key={item}>{item}</li>)
-                          : null}
                       </ul>
                     </details>
-                  ) : null}
-                  <details>
-                    <summary>Expected outcomes</summary>
+                  </article>
+                ))}
+
+                {state.blocked_tests.length > 0 ? (
+                  <div>
+                    <h3>Blocked tests (not hidden)</h3>
                     <ul>
-                      {t.expected_outcomes.map((o) => (
-                        <li key={o.outcome}>
-                          {o.outcome} (p={o.p.toFixed(2)})
+                      {state.blocked_tests.map((b: BlockedTest) => (
+                        <li key={b.kp_test_ref}>
+                          <strong>{b.kp_test_ref}</strong> — {b.blocked_reasons.join("; ")}
                         </li>
                       ))}
                     </ul>
-                  </details>
-                </article>
-              ))}
+                  </div>
+                ) : null}
 
-              {state.blocked_tests.length > 0 ? (
+                {state.missing_evidence.length > 0 ? (
+                  <div>
+                    <h3>Still needed</h3>
+                    <ul>
+                      {state.missing_evidence.map((m) => (
+                        <li key={m}>{m}</li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
+
                 <div>
-                  <h3>Blocked tests (not hidden)</h3>
-                  <ul>
-                    {state.blocked_tests.map((b: BlockedTest) => (
-                      <li key={b.kp_test_ref}>
-                        <strong>{b.kp_test_ref}</strong> — {b.blocked_reasons.join("; ")}
-                      </li>
-                    ))}
-                  </ul>
+                  <button onClick={buildReport}>Build report</button>{" "}
+                  {reportId ? <span>Report: {reportId}</span> : null}
                 </div>
-              ) : null}
-
-              {state.missing_evidence.length > 0 ? (
-                <div>
-                  <h3>Still needed</h3>
-                  <ul>
-                    {state.missing_evidence.map((m) => (
-                      <li key={m}>{m}</li>
-                    ))}
-                  </ul>
-                </div>
-              ) : null}
-
-              <h3>Evidence</h3>
-              {evidence.length === 0 ? <p>No evidence yet.</p> : null}
-              <ul>
-                {evidence.map((e) => {
-                  const id = String(e.payload.evidence_id ?? e.seq);
-                  const linked = observations.filter((o) =>
-                    ((o.payload.evidence_ids as string[] | undefined) ?? []).includes(id),
-                  );
-                  const ai = linked.some((o) =>
-                    String(o.payload.extractor ?? "").startsWith("spark") ||
-                    String(o.payload.extractor ?? "").startsWith("muse-"),
-                  );
-                  return (
-                    <li key={e.seq}>
-                      {String(e.payload.type ?? e.type)}{" "}
-                      {ai ? <span>[AI-extracted]</span> : null}{" "}
-                      <small>{id.slice(0, 8)}…</small>
-                    </li>
-                  );
-                })}
-              </ul>
-
-              <div>
-                <button onClick={buildReport}>Build report</button>{" "}
-                {reportId ? <span>Report: {reportId}</span> : null}
               </div>
             </div>
           ) : (
             <p>Loading state…</p>
           )}
+
+          <section className="drawer">
+            <h3>
+              <button
+                onClick={() => setDrawerOpen((o) => !o)}
+                aria-expanded={drawerOpen}
+              >
+                Evidence ({evidence.length}) {drawerOpen ? "▾" : "▸"}
+              </button>
+            </h3>
+            {drawerOpen ? (
+              <ul>
+                {evidence.map((e) => {
+                  const p = e.payload as Record<string, unknown>;
+                  const id = String(p.evidence_id ?? e.seq);
+                  const etype = String(p.type ?? e.type);
+                  const linked = observations.filter((o) =>
+                    ((o.payload.evidence_ids as string[] | undefined) ?? []).includes(id),
+                  );
+                  const extractors = linked.map((o) =>
+                    String((o.payload as Record<string, unknown>).extractor ?? ""),
+                  );
+                  const ai = extractors.find(
+                    (x) => x.startsWith("spark") || x.startsWith("muse-"),
+                  );
+                  const dsp = extractors.some((x) => x.startsWith("dsp:"));
+                  const sim = extractors.some((x) => x.startsWith("sim:"));
+                  const agreement = linked
+                    .map((o) => String((o.payload as Record<string, unknown>).agreement ?? ""))
+                    .find(Boolean);
+                  const overlays = (p.overlays as {
+                    concept?: string;
+                    used_concept?: string;
+                    found?: boolean;
+                    masks?: OverlayMask[];
+                  }[] | undefined) ?? [];
+                  const masks = overlays.flatMap((o) => o.masks ?? []);
+                  const { w, h } = overlayExtent(masks);
+                  return (
+                    <li key={e.seq}>
+                      <strong>{etype}</strong>{" "}
+                      {ai ? <span className="badge ai">AI-extracted: {ai}</span> : null}{" "}
+                      {agreement ? <span className="badge ai">{agreement}</span> : null}{" "}
+                      {dsp ? <span className="badge dsp">Signal processing, not AI</span> : null}{" "}
+                      {etype === "manual_page" ? (
+                        <span className="badge manual">
+                          manual p.{String((p.spec_ranges as { page?: number }[] | undefined)?.[0]?.page ?? "?")}
+                        </span>
+                      ) : null}{" "}
+                      {sim ? <span className="badge sim">OBD · sim</span> : null}{" "}
+                      <small>{id.slice(0, 8)}…</small>
+                      {overlays.length > 0 ? (
+                        <SamOverlay
+                          width={w}
+                          height={h}
+                          masks={masks}
+                          label={`Recorded overlay (${masks.length} masks; photo bytes are not bundled)`}
+                        />
+                      ) : null}
+                    </li>
+                  );
+                })}
+              </ul>
+            ) : null}
+          </section>
         </div>
       ) : null}
     </section>

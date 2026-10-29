@@ -2,6 +2,94 @@
 
 Newest first. Each entry: date, decision, why. Add one whenever scope, a dependency or an architecture choice changes.
 
+## 2026-10-29 — M6B bundle infrastructure + web pass (bundles owner-built next)
+
+Plan `.agents/plans/M6B.md` implemented in order with the approved
+corrections; the two `.mmrec` bundles are NOT committed yet — the owner
+runs `scripts/record_demo_cache.py` live (~$0.20 one-time), then
+`scripts/make_demo_bundle.py`, then commits. Verified 2026-10-29: backend
+386 passed + 8 skipped in 119 s (under the 3-minute cap; 7 new skips are
+the cache-gated bundle tests), `scripts/replay_check.sh` OK on
+`sim-healthy.mmrec`, `web` `npm ci --offline` + `vite build` green with
+`package.json` unchanged. No commit, per instruction.
+
+- Generator (`scripts/make_demo_bundle.py`) drives the real backend
+  in-process (`TestClient`, non-public, `REPLAY_USE_CACHED_LLM=true`):
+  session (Ford Focus 2012 2.0L I4, `vin_last6` only, L2,
+  `[multimeter, fuel pressure gauge]`), genuine fingerprint, DTC/PID
+  evidence + sim observations, recorded PDF ranges, rank-1 planner loop
+  (keyframe after the 2nd test; DSP synth WAV for `engine_sound_screen`),
+  confirmatory battery check with the recorded book spec (manual flip),
+  `POST /report` with Wonder from the seeded disk cache ($0, re-validated
+  on the way in). Frozen clock + uuid5 ids + fixed zip timestamps make
+  two consecutive runs byte-identical (proven in a /tmp dry run with a
+  synthetic cache: vacuum 44 events p=0.954, coil 41 events p=0.997,
+  replay chain valid, $0 rebuild reusing the embedded review).
+- Correction 1 (non-empty overlay): the generator overlays the `battery`
+  concept from recorded SAM bytes parsed by the real parser (3 masks) —
+  never the live not-found air-filter stream — and fails loudly on an
+  empty overlay; `test_demo_bundles.py` asserts ≥1 non-empty mask in both
+  `meta.json` and the image evidence payload. Supporting backend change:
+  the keyframe route now logs its `overlays` on the image evidence (schema
+  tolerates the key, like `spec_ranges`) so replays render recorded
+  masks/boxes; photo bytes are not bundled, so the drawer renders shapes
+  without the photo (noted in `docs/JUDGES.md`).
+- Correction 2 (order): the generator fails fast with `DemoCacheMissing`
+  naming `scripts/record_demo_cache.py` (exit 2); bundle tests skip with
+  that reason until `demo_cache/{second_opinion,wonder_*}.json` exist.
+  The recorder makes only the missing calls (1× Spark Open second
+  opinion, 2× Wonder against the same deterministic audits, optional 1×
+  SAM concept through the current downscale path), prints per-call cost,
+  and hard-refuses above $1.00 cumulative. Provenance: demo files carry
+  the original call records (`request_sha256` included); the generator
+  seeds the Meta disk cache from them, so a drifted audit misses the
+  cache and fails loudly instead of spending.
+- Documented deviations from the plan text (letter vs feasibility):
+  (a) the planner correctly ranks the battery check too low for
+  vacuum/coil to ever be rank 1 inside a convergent run, so it rides as a
+  labelled post-loop confirmatory step (still runnable, still through the
+  real result route with a real spec and a genuine flip: generic
+  overcharging vs book normal at 14.75 V running); vacuum totals 5 tests,
+  coil 4; the rank-1 loop itself converges in ≤4 (vacuum
+  dtc/listen/trim/hiss, coil dtc/mode06/hiss). (b) The PDF extract runs
+  before the loop (the spec must exist before the citing result; evidence
+  order never moves posteriors). (c) The outdoors gate is acked once up
+  front (safety ack, not a test choice); without it the loop starves on
+  ungated tests and stalls. (d) The Spark primary replays the existing
+  live fixture (no new call, per the plan's provenance table); only the
+  second opinion and Wonder are fresh recordings.
+- Backend fixes: `POST /report` reuses the latest `report_built`-embedded
+  Wonder review when live Wonder is skipped or fails ($0; otherwise the
+  explicit unavailable line stays), and `report_built` now embeds the
+  review; `replay_bundle_bytes` honours bundle `meta.json`
+  (`user_level`/`tools`/redacted `vehicle`, old bundles fall back to
+  L1/empty/None); `mmrec.create` takes an optional zip `date_time`.
+- Web (§2, zero new deps): `styles.css` rewritten (~250 lines, CSS
+  variables, light + `prefers-color-scheme`/persisted `data-theme`
+  toggle, 280px/1fr/340px grid → 1 column <900px, cards, bordered-text
+  badges, print rules); `Replay.tsx` judge landing (exact two sentences,
+  "Play the investigation" loads `sim-vacuum-leak.mmrec` at cursor 0 and
+  autoplays 2× — the old park-at-max is fixed for judge loads only —
+  plus coil link, report handoff and the mirrored 5-item checklist),
+  status bar (mark, `vin_last6`, sim chip, level switch), icon timeline
+  bound to the scrubber, `HypothesisChart` with the ≥0.8 concluded band,
+  0.5 line and clickable trace points (expected/measured, LR + source,
+  L-level text), next-test cards with EIG/cost, display-only safety
+  checkboxes, blocked reasons, still-needed list, and a collapsible
+  evidence drawer (AI/DSP/manual/OBD-sim badges + recorded `SamOverlay`
+  shapes). `Report.tsx` badges use the same classes;
+  `report.html.j2` carries the variables inline with print rules.
+  `JUDGE_FIXTURE`, the App judge note and `modal_smoke.sh` now name
+  `sim-vacuum-leak.mmrec` (smoke needs the committed bundles).
+- `docs/JUDGES.md` is the canonical 60-second script, mirrored on the
+  landing. `scripts/screenshot_site.sh` (owner-run, needs `google-chrome`
+  off-sandbox) captures the URL-addressable shots; mid-replay, drawer and
+  report shots stay manual until pasted back.
+- Owner steps to finish M6B: run the recorder live, run the generator,
+  commit the two bundles (+ demo cache), re-run `make_demo_bundle.py
+  --check` in CI, paste back the screenshots. The Wonder parallel review
+  only reports; its fixes land as a separate job (correction 3).
+
 ## 2026-10-29 — M6 landed (levels, safety gates, report + Wonder, replay + web, Modal, budget)
 
 Plan `.agents/plans/M6.md` implemented in order, each step with its test

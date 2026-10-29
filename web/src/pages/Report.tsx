@@ -218,8 +218,15 @@ export default function Report({ reportId }: Props) {
           <ul>
             {report.evidence.map((ev) => (
               <li key={ev.evidence_id}>
-                {ev.type} {ev.ai_extracted ? <span>[AI-extracted{ev.extractor ? `: ${ev.extractor}` : ""}]</span> : <span>[{ev.extractor ?? "manual"}]</span>}{" "}
-                {ev.agreement ? <span>({ev.agreement})</span> : null}
+                {ev.type}{" "}
+                {ev.ai_extracted ? (
+                  <span className="badge ai">
+                    AI-extracted{ev.extractor ? `: ${ev.extractor}` : ""}
+                  </span>
+                ) : (
+                  <span className="badge sim">{ev.extractor ?? "manual"}</span>
+                )}{" "}
+                {ev.agreement ? <span className="badge ai">{ev.agreement}</span> : null}
               </li>
             ))}
           </ul>

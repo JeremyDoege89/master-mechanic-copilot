@@ -4,14 +4,32 @@
 <meta charset="utf-8">
 <title>Diagnostic report {{ report.report_id }}</title>
 <style>
-body { font-family: sans-serif; max-width: 60rem; margin: 2rem auto; padding: 0 1rem; }
-table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
-th, td { border: 1px solid #999; padding: 0.4rem 0.6rem; text-align: left; vertical-align: top; }
-.badge { display: inline-block; border: 1px solid #333; border-radius: 0.4rem; padding: 0 0.4rem; font-size: 0.85em; }
-.ai { background: #fff3cd; }
-.dsp { background: #d4edda; }
+:root {
+  --bg: #ffffff; --surface: #f6f7f9; --card: #ffffff; --ink: #1a1a1a;
+  --muted: #5a5f66; --line: #d8dce1; --accent: #1a5fb4;
+  --ok: #1e7b34; --warn: #8a5100; --bad: #b00020;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14161a; --surface: #1d2026; --card: #20242b; --ink: #e8eaed;
+    --muted: #a8adb5; --line: #3a4048; --accent: #7aa7e8;
+    --ok: #7bd88f; --warn: #e8b34b; --bad: #ff8a9d;
+  }
+}
+body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; max-width: 60rem; margin: 2rem auto; padding: 0 1rem; color: var(--ink); background: var(--bg); line-height: 1.45; }
+table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: 0.92em; }
+th, td { border: 1px solid var(--line); padding: 0.4rem 0.6rem; text-align: left; vertical-align: top; }
+th { background: var(--surface); }
+.badge { display: inline-block; border: 1px solid var(--muted); border-radius: 8px; padding: 0 0.5rem; font-size: 0.85em; }
+.ai { border-color: var(--accent); color: var(--accent); }
+.dsp { border-color: var(--ok); color: var(--ok); }
 pre { white-space: pre-wrap; word-break: break-word; }
-@media print { body { margin: 0; } }
+@media print {
+  :root { --bg: #ffffff; --surface: #ffffff; --card: #ffffff; --ink: #000000; --muted: #333333; --line: #666666; }
+  body { margin: 0; }
+  tr { break-inside: avoid; }
+  .badge { border: 1px solid #000; color: #000; background: none; }
+}
 </style>
 </head>
 <body>

@@ -53,16 +53,36 @@ def fold_rows(session: sess.Session, rows: list[dict]) -> int:
 def replay_bundle_bytes(
     data: bytes,
     *,
-    user_level: str = "L1",
+    user_level: str | None = None,
     tools: list[str] | None = None,
     label: str = "<memory>",
 ) -> sess.Session:
-    """Verify bundle bytes and fold them into a fresh replay session."""
+    """Verify bundle bytes and fold them into a fresh replay session.
+
+    M6B §1.2: judge bundles carry their demo context (``user_level``,
+    ``tools``, redacted ``vehicle``) in ``meta.json`` so the replay status
+    bar matches the recorded investigation. Explicit arguments override
+    the bundle meta; bundles without it (e.g. ``sim-healthy.mmrec``) keep
+    the old L1/empty/None defaults.
+    """
+    import json as _json
+
     members = mmrec.loads(data)
     mmrec.verify_members(members, label)
+    try:
+        bundle_meta = _json.loads(members["meta.json"].decode("utf-8"))
+    except (ValueError, UnicodeDecodeError, KeyError):
+        bundle_meta = {}
+    if user_level is None:
+        user_level = str(bundle_meta.get("user_level", "L1"))
+    if tools is None:
+        tools = list(bundle_meta.get("tools", []))
+    vehicle = bundle_meta.get("vehicle")
+    if not isinstance(vehicle, dict):
+        vehicle = None
     registry = sess.get_registry()
     session = registry.create(
-        user_level=user_level, tools=list(tools or []), mode="replay", vehicle=None
+        user_level=user_level, tools=list(tools), mode="replay", vehicle=vehicle
     )
     fold_rows(session, mmrec.event_rows(members))
     return session
