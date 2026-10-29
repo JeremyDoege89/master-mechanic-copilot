@@ -10,8 +10,8 @@ the ``llm_call`` event so the audit trail says the answer came from the
 fallback path.
 
 SAM (``meta/sam.py`` streaming + parser grammar) and Voice Transcribe
-(there is no ``meta/voice.py`` yet — nothing to substitute) get NO
-fallback and keep raising.
+(``meta/voice.py`` ASR proxy — nothing to substitute) get NO fallback
+and keep raising.
 """
 
 from __future__ import annotations

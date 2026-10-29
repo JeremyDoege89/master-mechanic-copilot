@@ -1,1 +1,9 @@
-{"bytes": 96000, "captured": "spike_voice_asr.py owner run", "channels": 1, "encoding": "pcm16", "provisional": true, "sample_rate_hz": 16000, "seconds": 3.0}
+{
+  "bytes": 123158,
+  "captured": "spike_voice_asr.py owner run",
+  "channels": 1,
+  "encoding": "PCM_24KHZ",
+  "provisional": true,
+  "sample_rate_hz": 24000,
+  "seconds": 2.5657916666666667
+}

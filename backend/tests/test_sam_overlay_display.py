@@ -1,6 +1,12 @@
-"""M7 §2.3a judge fix: SAM overlay confidences, match + other candidates."""
+"""SAM overlay candidates are displayed without claiming a match.
+
+Confidence is not identity: every candidate renders with equal styling and
+its own score, and no element or report field may claim a "match".
+"""
 
 from __future__ import annotations
+
+import json
 
 
 def _image_evidence_with_three_masks():
@@ -25,18 +31,22 @@ def _image_evidence_with_three_masks():
     }
 
 
-def test_rank_overlay_masks_highlights_highest():
+def _assert_no_match_claim(obj: object) -> None:
+    blob = json.dumps(obj, default=str)
+    assert "match" not in blob.lower()
+
+
+def test_rank_overlay_masks_keeps_score_order_without_match():
     from mmc.report.build import rank_overlay_masks
 
     masks = _image_evidence_with_three_masks()["overlays"][0]["masks"]
     ranked = rank_overlay_masks(masks)
     assert [m["object_id"] for m in ranked] == ["o2", "o1", "o3"]
-    assert ranked[0]["rank_label"] == "match"
-    assert all(m["rank_label"] == "other candidate" for m in ranked[1:])
-    assert ranked[0]["score"] == 0.93
+    assert [m["score"] for m in ranked] == [0.93, 0.61, 0.55]
+    _assert_no_match_claim(ranked)
 
 
-def test_report_carries_match_plus_candidates_without_touching_events(tmp_path, monkeypatch):
+def test_report_carries_candidates_without_match_without_touching_events(tmp_path, monkeypatch):
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     monkeypatch.delenv("MMC_VIN_KEY", raising=False)
     from mmc import sessions as sess_mod
@@ -66,8 +76,9 @@ def test_report_carries_match_plus_candidates_without_touching_events(tmp_path, 
     assert overlays, "image evidence must surface overlay candidates in the report"
     masks = overlays[0]["masks"]
     assert [m["object_id"] for m in masks] == ["o2", "o1", "o3"]
-    assert masks[0]["rank_label"] == "match"
     assert all("score" in m for m in masks)
+    _assert_no_match_claim(overlays)
+    _assert_no_match_claim(report["sam_overlays"])
     # No change to recorded data: the event log is byte-identical.
     after = [dict(e["payload"]) for e in session.store.iter_replay()]
     assert after == before

@@ -739,16 +739,26 @@ def downscale_image(
     """Shrink a JPEG/PNG so its long side is at most ``max_side`` (ffmpeg).
 
     Returns ``(sent_bytes, scale, orig_size, sent_size)`` with
-    ``scale = sent/orig <= 1``. Undecodable, already-small, or
-    ffmpeg-less input is sent as-is with ``scale == 1.0`` — never an error.
+    ``scale = sent/orig <= 1``. Undecodable or already-small input is sent
+    as-is with ``scale == 1.0`` — never an error. Media that NEEDS
+    downscaling raises :class:`RuntimeError` when ffmpeg is not installed,
+    instead of silently passing through unscaled (an unscaled pass-through
+    would skip the ``1/scale`` coordinate correction downstream). A
+    present-but-failing ffmpeg transcode (e.g. synthetic test media the
+    decoder rejects) still passes through with a logged warning.
     SAM bills per image, not per pixel, so cost does not change.
     """
     try:
         width, height = image_size(image_bytes)
     except ValueError:
         return image_bytes, 1.0, None, None
-    if max(width, height) <= max_side or _ffmpeg_bin() is None:
+    if max(width, height) <= max_side:
         return image_bytes, 1.0, (width, height), (width, height)
+    if _ffmpeg_bin() is None:
+        raise RuntimeError(
+            f"downscaling a {width}x{height} image to <={max_side}px needs ffmpeg; "
+            "not installed (apt-get install ffmpeg)"
+        )
     factor = max_side / max(width, height)
     sent_w, sent_h = max(2, int(width * factor)), max(2, int(height * factor))
     try:
@@ -766,10 +776,15 @@ def downscale_image(
                     text=True,
                 )
                 if proc.returncode != 0:
+                    logger.warning(
+                        "ffmpeg cannot downscale %sx%s (%s); sending as-is",
+                        width, height, proc.stderr.strip()[:200],
+                    )
                     return image_bytes, 1.0, (width, height), (width, height)
                 sent = Path(dst.name).read_bytes()
         actual_w, actual_h = image_size(sent)
-    except (OSError, ValueError):
+    except (OSError, ValueError) as e:
+        logger.warning("ffmpeg image downscale failed (%s); sending as-is", e)
         return image_bytes, 1.0, (width, height), (width, height)
     return sent, actual_w / width, (width, height), (actual_w, actual_h)
 
@@ -784,8 +799,11 @@ def downscale_video(
 
     H.264/yuv420p, frame rate untouched, audio dropped (SAM ignores it).
     Same ``(sent_bytes, scale, orig_size, sent_size)`` contract as
-    :func:`downscale_image`; anything undecodable/small/tool-less goes
-    through unchanged with ``scale == 1.0``.
+    :func:`downscale_image`. Already-small clips pass through with
+    ``scale == 1.0``; a clip that NEEDS downscaling raises
+    :class:`RuntimeError` when ffmpeg is not installed, instead of silently
+    passing through unscaled. A present-but-failing transcode still passes
+    through with a logged warning.
     """
     if size is None:
         return video_bytes, 1.0, None, None
@@ -793,7 +811,10 @@ def downscale_video(
     if width <= 0 or height <= 0 or max(width, height) <= max_side:
         return video_bytes, 1.0, (width, height), (width, height)
     if _ffmpeg_bin() is None:
-        return video_bytes, 1.0, (width, height), (width, height)
+        raise RuntimeError(
+            f"downscaling a {width}x{height} clip to <={max_side}px needs ffmpeg; "
+            "not installed (apt-get install ffmpeg)"
+        )
     try:
         check_video_bytes(video_bytes, filename)
     except ValueError:
@@ -818,9 +839,14 @@ def downscale_video(
                     text=True,
                 )
                 if proc.returncode != 0:
+                    logger.warning(
+                        "ffmpeg cannot downscale %sx%s clip (%s); sending as-is",
+                        width, height, proc.stderr.strip()[:200],
+                    )
                     return video_bytes, 1.0, (width, height), (width, height)
                 sent = Path(dst.name).read_bytes()
-    except OSError:
+    except OSError as e:
+        logger.warning("ffmpeg video downscale failed (%s); sending as-is", e)
         return video_bytes, 1.0, (width, height), (width, height)
     return sent, sent_w / width, (width, height), (sent_w, sent_h)
 

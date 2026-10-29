@@ -314,40 +314,44 @@ export default function Report({ reportId }: Props) {
                     <strong>Keyframe</strong>{" "}
                     <small className="t-raw">{ov.evidence_id.slice(0, 8)}…</small>
                   </p>
-                  {(ov.overlays ?? []).map((c, i) => (
-                    <div key={i}>
-                      <p>
-                        <strong>{c.used_concept || c.concept}</strong>{" "}
-                        {c.found ? <span className="badge ai">found</span> : <span>not found</span>}
-                      </p>
-                      {(c.masks ?? []).length > 0 ? (
-                        <table>
-                          <thead>
-                            <tr>
-                              <th>Candidate</th>
-                              <th>Confidence</th>
-                              <th>Role</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {(c.masks ?? []).map((m, j) => (
-                              <tr key={j}>
-                                <td><small className="t-raw">{m.object_id}</small></td>
-                                <td>{typeof m.score === "number" ? m.score.toFixed(2) : "—"}</td>
-                                <td>
-                                  {m.rank_label === "match" ? (
-                                    <span className="badge ai">match</span>
-                                  ) : (
-                                    <span className="badge">other candidate</span>
-                                  )}
-                                </td>
+                  {(ov.overlays ?? []).map((c, i) => {
+                    const concept = c.used_concept || c.concept || "candidate";
+                    const ordered = [...(c.masks ?? [])].sort(
+                      (a, b) => (b.score ?? 0) - (a.score ?? 0),
+                    );
+                    return (
+                      <div key={i}>
+                        <p>
+                          <strong>{concept}</strong>{" "}
+                          {c.found ? <span className="badge ai">found</span> : <span>not found</span>}
+                        </p>
+                        <p>
+                          <small>
+                            SAM 3.1 found {ordered.length} candidate{ordered.length === 1 ? "" : "s"} for
+                            &quot;{concept}&quot;; scores are SAM&apos;s own confidence, not a confirmed match.
+                          </small>
+                        </p>
+                        {ordered.length > 0 ? (
+                          <table>
+                            <thead>
+                              <tr>
+                                <th>Candidate</th>
+                                <th>Confidence</th>
                               </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      ) : null}
-                    </div>
-                  ))}
+                            </thead>
+                            <tbody>
+                              {ordered.map((m, j) => (
+                                <tr key={j}>
+                                  <td><small className="t-raw">{m.object_id}</small></td>
+                                  <td>{typeof m.score === "number" ? m.score.toFixed(2) : "—"}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        ) : null}
+                      </div>
+                    );
+                  })}
                 </div>
               ))}
             </div>

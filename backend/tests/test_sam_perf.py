@@ -235,6 +235,7 @@ def _write_png(path: Path, width: int, height: int) -> bytes:
     return data
 
 
+@pytest.mark.needs_ffmpeg
 def test_downscale_image_caps_long_side(tmp_path):
     data = _write_png(tmp_path / "big.png", 1280, 960)
     sent, scale, orig, sent_size = downscale_image(data)
@@ -254,6 +255,28 @@ def test_downscale_image_leaves_small_and_broken_as_is(tmp_path):
     assert sent == broken and scale == 1.0 and orig is None
 
 
+def test_downscale_needs_ffmpeg_raises_loudly(tmp_path, monkeypatch):
+    """A missing ffmpeg must fail loudly, never pass through unscaled.
+
+    Simulates the CI runner without ffmpeg (shutil.which -> None): a
+    1280-px image AND a 1280-px clip must raise with 'ffmpeg' in the
+    message instead of returning scale 1.0 at full size. Small media
+    still passes through (no ffmpeg needed).
+    """
+    import shutil as _shutil
+
+    monkeypatch.setattr(_shutil, "which", lambda _name: None)
+    monkeypatch.setattr(sam_mod, "_ffmpeg_bin", lambda: None)
+    big = _write_png(tmp_path / "big.png", 1280, 960)
+    with pytest.raises(RuntimeError, match="ffmpeg"):
+        downscale_image(big)
+    with pytest.raises(RuntimeError, match="ffmpeg"):
+        downscale_video(b"\x00\x00\x00\x18ftypisom" + b"\x00" * 64, "c.mp4", (1280, 960))
+    small = _write_png(tmp_path / "small.png", 320, 240)
+    sent, scale, _orig, sent_size = downscale_image(small)
+    assert sent == small and scale == 1.0 and sent_size == (320, 240)
+
+
 def _write_clip(path: Path, width: int, height: int, seconds: float = 1.0, fps: int = 10) -> Path:
     proc = subprocess.run(
         [
@@ -269,6 +292,7 @@ def _write_clip(path: Path, width: int, height: int, seconds: float = 1.0, fps: 
     return path
 
 
+@pytest.mark.needs_ffmpeg
 def test_downscale_video_caps_long_side_and_keeps_fps(tmp_path):
     from mmc.upload.video import probe_clip
 
@@ -284,6 +308,7 @@ def test_downscale_video_caps_long_side_and_keeps_fps(tmp_path):
     assert sam_mod.check_video_bytes(sent, "sent.mp4") == "mp4"
 
 
+@pytest.mark.needs_ffmpeg  # _write_clip itself needs the ffmpeg binary
 def test_downscale_video_leaves_small_as_is(tmp_path):
     src = _write_clip(tmp_path / "small.mp4", 320, 240)
     data = src.read_bytes()
@@ -309,6 +334,7 @@ def _sam_client(tmp_path, events):
     )
 
 
+@pytest.mark.needs_ffmpeg
 def test_segment_image_sends_small_media_and_scales_back(tmp_path):
     """Fake transport replays the battery stream for a 1280-px PNG: the
     wire bytes are <=640 px, the record carries sam_scale, and result
@@ -339,6 +365,7 @@ def test_segment_image_sends_small_media_and_scales_back(tmp_path):
     assert (1926, 1380, 2262, 1662) in boxes
 
 
+@pytest.mark.needs_ffmpeg
 def test_segment_image_box_prompt_uses_sent_size(tmp_path):
     image = _write_png(tmp_path / "big.png", 1280, 960)
     events = load_stream_fixture(VISION / "sam_stream_battery.jsonl")
@@ -369,6 +396,7 @@ def test_segment_image_box_prompt_uses_sent_size(tmp_path):
     assert "x1=100;y1=100;x2=200;y2=200" in text
 
 
+@pytest.mark.needs_ffmpeg
 def test_track_video_downscale_record_and_scaleback(tmp_path, trimmed):
     """1280-px clip + trimmed stream: record carries sam_scale and result
     boxes match the no-downscale coordinates (trimmed masks are full-res

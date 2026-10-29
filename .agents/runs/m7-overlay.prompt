@@ -1,0 +1,10 @@
+The "highlight the highest-confidence mask as the match" change backfired on the live site (screenshot
+/tmp/mmc-shots/u-mid-match.png): for the concept "battery" SAM's top-scoring mask is the air-filter box on the right,
+so the page labels the wrong part "match" and fades the real battery. Confidence is not identity, and we must not
+claim a match the data doesn't support. Change it in web/src/components/SamOverlay.tsx, Replay.tsx, Report.tsx and the
+report template/rank_overlay_masks in backend/mmc/report/: draw all candidates with equal styling, each labelled with
+its score (e.g. "battery? 0.91"), caption "SAM 3.1 found 3 candidates for "battery"; scores are SAM's own confidence,
+not a confirmed match", and keep them listed in score order in the report table without a "match" column. Do not
+touch backend/mmc/meta/voice.py, voice_commands.py, routes.py voice parts or android/ (another job is editing those).
+Update tests (test_sam_overlay_display.py) to assert no element/field claims "match". Run the backend suite (< 3 min),
+make_demo_bundle.py --check and the web build. Do not commit. Foreground only.

@@ -21,16 +21,25 @@ class RealtimeAsrClientTest {
 
     @Test
     fun partialFinalShapesFromFixtures() {
-        assertTrue(client.isPartial("""{"type":"partial","text":"next"}"""))
+        assertTrue(client.isPartial("""{"type":"transcript","transcript":"next","final":false,"audioProcessedMs":800}"""))
+        assertTrue(client.isFinal("""{"type":"transcript","transcript":"next test","final":true,"audioProcessedMs":1200}"""))
         assertTrue(client.isFinal("""{"type":"final","text":"next test","duration_s":1.2}"""))
-        assertEquals(false, client.isPartial("""{"type":"final","text":"x"}"""))
-        assertEquals(false, client.isFinal("""{"type":"partial","text":"x"}"""))
+        assertEquals(false, client.isPartial("""{"type":"transcript","transcript":"x","final":true}"""))
+        assertEquals(false, client.isFinal("""{"type":"transcript","transcript":"x","final":false}"""))
     }
 
     @Test
-    fun audioSpecIs16kPcm16Mono() {
-        assertEquals(16000, VoiceAudioSpec.SAMPLE_RATE_HZ)
+    fun speechCompleteCountsAsFinalProgressDoesNot() {
+        assertTrue(client.isFinal("""{"type":"speechComplete","turnId":1,"transcript":"Next test","audioProcessedMs":1200}"""))
+        assertEquals(false, client.isPartial("""{"type":"audioProgress","audioProcessedMs":800}"""))
+        assertEquals(false, client.isFinal("""{"type":"audioProgress","audioProcessedMs":800}"""))
+    }
+
+    @Test
+    fun audioSpecIs24kPcm16Mono() {
+        assertEquals(24000, VoiceAudioSpec.SAMPLE_RATE_HZ)
         assertEquals(16, VoiceAudioSpec.BITS_PER_SAMPLE)
+        assertEquals(2400, VoiceAudioSpec.frameSamples())
         assertTrue(VoiceAudioSpec.MIC_EXPLANATION.contains("next test"))
     }
 }

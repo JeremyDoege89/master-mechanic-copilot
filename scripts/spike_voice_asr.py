@@ -2,34 +2,43 @@
 """M7 voice ASR spike (plan .agents/plans/M7.md section 1).
 
 Owner-run OUTSIDE the sandbox — it needs network + a key, like
-spike_meta_upload.py. Probes the realtime Voice Transcribe endpoint and
-saves KEY-FREE fixtures for the offline proxy build.
+spike_meta_upload.py. Probes the realtime Voice Transcribe endpoint per
+docs/research/meta-voice/ (handshake as the first JSON text frame, key
+inside the handshake, raw PCM binary frames, endStream, read to close
+1000) and saves KEY-FREE fixtures for the offline proxy build.
 
 Usage (from repo root, OUTSIDE the sandbox):
     backend/.venv/bin/python scripts/spike_voice_asr.py [--wav PATH] [--seconds 5]
 
 Key: MODEL_API_KEY env, or ~/.config/meta/model-api.env. The key is never
 printed and never stored: fixtures hold only message shapes/sizes (no
-headers, no key, no audio bytes — audio replaced by length stubs).
+key, no audio bytes — audio replaced by length stubs). The handshake
+fixture is the REDACTED frame (authorization removed entirely).
 
 Calls, in order (each prints its own outcome; a failed call never stops the
-later ones, but the exit is non-zero unless the session config round-trip
+later ones, but the exit is non-zero unless the handshake round-trip
 succeeds):
-  1. Open ASR_REALTIME_URL (default wss://api.meta.ai/v1/asr/realtime) with
-     Authorization: Bearer <key>, send one JSON session_config frame
-     {model, sample_rate_hz, encoding, channels, keywords} and print the
-     server's acknowledgement shape (field names verbatim).
-  2. Stream a short PCM16 16 kHz mono clip as binary frames (~100 ms each),
-     print each upstream message shape (partial/final events, usage /
-     duration fields verbatim) with values truncated to 200 chars.
-  3. Send a JSON {type: "stop"} frame, print the final + usage messages.
+  1. Open ASR_REALTIME_URL (default wss://api.meta.ai/v1/asr/realtime)
+     with a ?sessionId= query param and NO Authorization header, send the
+     documented handshake frame {authorization, audioEncoding, model,
+     mode, keywords} as the first JSON text frame and print the server's
+     acknowledgement shape (field names verbatim — the ack is the only
+     server frame with no `type` field).
+  2. Stream a short PCM16 24 kHz mono clip as binary frames (~80 ms each,
+     paced at real time per the realtime spec — bursting ahead trips the
+     backlog policy), printing each upstream event type (transcript /
+     audioProgress / speech* / speaker / error verbatim) with values
+     truncated to 200 chars.
+  3. Send {"type": "endStream"}, keep reading until the server closes,
+     print the close code/reason and any final + usage messages.
 
 Test input is self-made only: a stdlib synth WAV ("next test", silence —
 no real speech claims) written to /tmp when --wav is absent.
 
 Fixture output (backend/tests/fixtures/asr/, provisional:true until the
 owner flips them after a live run):
-  session_config.json   — the exact config frame the spike sent
+  session_config.json   — the redacted handshake frame the spike sent
+                          (authorization removed; key never stored)
   stream_shapes.jsonl   — one JSON object per upstream message SHAPE
                           {direction, type, keys, truncated_preview}
   pcm_stub.json         — {sample_rate_hz, encoding, seconds, bytes}
@@ -44,9 +53,11 @@ import argparse
 import asyncio
 import io
 import json
+import math
 import os
 import struct
 import sys
+import uuid
 import wave
 from pathlib import Path
 
@@ -57,7 +68,9 @@ FIXTURE_DIR = ROOT / "backend" / "tests" / "fixtures" / "asr"
 DEFAULT_URL = os.environ.get("ASR_REALTIME_URL", "wss://api.meta.ai/v1/asr/realtime")
 DEFAULT_MODEL = os.environ.get("MODEL_ASR", "muse-voice-transcribe-1.0")
 
-SAMPLE_RATE_HZ = 16000
+# Documented engine-native rate: PCM_24KHZ = signed 16-bit LE mono 24 kHz.
+SAMPLE_RATE_HZ = 24000
+FRAME_BYTES = SAMPLE_RATE_HZ * 2 * 80 // 1000  # ~80 ms per binary frame
 # Provisional keyword-biasing list (plan §1): test refs + hypothesis labels
 # + outcome tokens + units. The proxy's session_config() builds the real one
 # from the active pack; the spike pins the wire FIELD name only.
@@ -84,13 +97,13 @@ def load_key() -> str:
 
 
 def synth_wav(seconds: float = 3.0) -> bytes:
-    """Deterministic PCM16 mono 16 kHz synth (440 Hz tone bursts, stdlib)."""
+    """Deterministic PCM16 mono 24 kHz synth (440 Hz tone bursts, stdlib)."""
     n = int(SAMPLE_RATE_HZ * seconds)
     frames = bytearray()
     for i in range(n):
         t = i / SAMPLE_RATE_HZ
         on = (i % SAMPLE_RATE_HZ) < SAMPLE_RATE_HZ // 2
-        v = 0.3 * __import__("math").sin(2 * __import__("math").pi * 440 * t) if on else 0.0
+        v = 0.3 * math.sin(2 * math.pi * 440 * t) if on else 0.0
         frames += struct.pack("<h", int(max(-1.0, min(1.0, v)) * 32767))
     buf = io.BytesIO()
     with wave.open(buf, "wb") as wav:
@@ -109,33 +122,24 @@ def pcm_from_wav(data: bytes) -> bytes:
         return wav.readframes(wav.getnframes())
 
 
-def session_config() -> dict:
-    return {
-        "type": "session_config",
-        "model": DEFAULT_MODEL,
-        "sample_rate_hz": SAMPLE_RATE_HZ,
-        "encoding": "pcm16",
-        "channels": 1,
-        "keywords": KEYWORDS,
-    }
-
-
-def shape_of(msg) -> dict:
+def shape_of(msg, direction: str = "in") -> dict:
     if isinstance(msg, (bytes, bytearray)):
-        return {"direction": "in", "type": "binary", "bytes": len(msg)}
+        return {"direction": direction, "type": "binary", "bytes": len(msg)}
     try:
         obj = json.loads(msg)
     except (ValueError, TypeError):
         text = str(msg)
-        return {"direction": "in", "type": "text-unknown", "keys": [], "preview": text[:200]}
+        return {"direction": direction, "type": "text-unknown", "keys": [],
+                "preview": text[:200]}
     if isinstance(obj, dict):
         return {
-            "direction": "in",
+            "direction": direction,
             "type": str(obj.get("type", "json-unknown")),
             "keys": sorted(obj.keys()),
             "preview": json.dumps(obj, sort_keys=True)[:200],
         }
-    return {"direction": "in", "type": "json-array", "keys": [], "preview": json.dumps(obj)[:200]}
+    return {"direction": direction, "type": "json-array", "keys": [],
+            "preview": json.dumps(obj)[:200]}
 
 
 async def run(url: str, pcm: bytes, seconds: float) -> int:
@@ -148,95 +152,134 @@ async def run(url: str, pcm: bytes, seconds: float) -> int:
         print("spike: DECISIONS note needed if websockets becomes a backend dep.")
         return 1
 
+    from mmc.meta import budget as budget_mod
+    from mmc.meta import voice as voice_mod
+
     key = load_key()
     try:
-        from mmc.meta import budget as budget_mod
-
         est = budget_mod.estimate_asr(seconds)
         print(f"spike: estimate_asr({seconds:.1f}s) = ${est:.6f} on the Meta $120 ledger")
     except ImportError:
         pass
 
-    config = session_config()
-    print(f"spike: connecting {url} model={DEFAULT_MODEL}")
-    print(f"spike: session_config keys={sorted(config.keys())} keywords={len(KEYWORDS)}")
+    # Documented handshake: proxy's key-free config plus the in-frame
+    # credential. The endpoint ignores the HTTP Authorization header, so
+    # none is sent. Redacted copy below is what fixtures record.
+    config = {**voice_mod.session_config(), "keywords": KEYWORDS}
+    handshake = voice_mod.build_handshake(config, key)
+    redacted = voice_mod.redacted_handshake(handshake)
+    session_id = f"spike-{uuid.uuid4()}"
+    sep = "&" if "?" in url else "?"
+    full_url = url if "sessionId=" in url else f"{url}{sep}sessionId={session_id}"
+    print(f"spike: connecting {full_url.split('?')[0]} model={DEFAULT_MODEL} "
+          f"audioEncoding={config['audioEncoding']}")
+    print(f"spike: handshake keys={sorted(handshake.keys())} keywords={len(KEYWORDS)} "
+          f"(authorization in-frame, never logged)")
     shapes: list[dict] = [
-        {"direction": "out", "type": "session_config", "keys": sorted(config.keys()),
-         "preview": json.dumps(config, sort_keys=True)[:200], "provisional": True}
+        {"direction": "out", "type": "handshake", "keys": sorted(redacted.keys()),
+         "preview": json.dumps(redacted, sort_keys=True)[:200], "provisional": True}
     ]
     ok = False
     try:
-        async with websockets.connect(url, additional_headers={"Authorization": f"Bearer {key}"}) as ws:
-            await ws.send(json.dumps(config))
-            print("spike: [1] session_config sent, waiting for ack (5 s)...")
+        async with websockets.connect(full_url, open_timeout=30) as ws:
+            await ws.send(json.dumps(handshake))
+            print("spike: [1] handshake sent, waiting for ack (10 s)...")
             try:
-                ack = await asyncio.wait_for(ws.recv(), timeout=5)
+                ack = await asyncio.wait_for(ws.recv(), timeout=10)
                 sh = shape_of(ack)
                 sh["provisional"] = True
                 shapes.append(sh)
                 print(f"spike: [1] ack shape type={sh['type']} keys={sh.get('keys')}")
                 print(f"spike: [1] ack preview {sh.get('preview', '')[:200]}")
-                ok = True
+                ok = sh["type"] == "json-unknown" and "sessionId" in (sh.get("keys") or [])
+                if not ok:
+                    print("spike: [1] ack is not the documented sessionId frame "
+                          "(it may be an error event — see preview)")
             except asyncio.TimeoutError:
-                print("spike: [1] no ack in 5 s (endpoint may differ — shapes unknown)")
-            # 2. Stream PCM as ~100 ms binary frames.
-            frame = int(SAMPLE_RATE_HZ * 0.1) * 2
-            chunks = [pcm[i : i + frame] for i in range(0, len(pcm), frame)]
-            print(f"spike: [2] streaming {len(pcm)} PCM bytes in {len(chunks)} binary frames...")
-            for i, chunk in enumerate(chunks):
-                await ws.send(chunk)
-                if i == 0:
-                    print(f"spike: [2] first binary frame {len(chunk)} bytes sent")
+                print("spike: [1] no ack in 10 s (handshake deadline is 10 s)")
+
+            # 2. Stream PCM paced at real time; print every server event.
+            events: list = []
+
+            async def receive_events() -> None:
                 try:
-                    msg = await asyncio.wait_for(ws.recv(), timeout=0.2)
-                    sh = shape_of(msg)
-                    sh["provisional"] = True
-                    shapes.append(sh)
-                    print(f"spike: [2] upstream type={sh['type']} keys={sh.get('keys')}")
-                    print(f"spike: [2] preview {sh.get('preview', '')[:200]}")
-                except asyncio.TimeoutError:
-                    pass
-            # 3. Stop frame, drain finals + usage.
-            await ws.send(json.dumps({"type": "stop"}))
-            print("spike: [3] stop sent, draining (5 s)...")
+                    async for message in ws:
+                        if isinstance(message, bytes):
+                            continue
+                        sh = shape_of(message)
+                        sh["provisional"] = True
+                        events.append(sh)
+                        print(f"spike: [2] upstream type={sh['type']} keys={sh.get('keys')}")
+                        print(f"spike: [2] preview {sh.get('preview', '')[:200]}")
+                        if sh["type"] == "error":
+                            print("spike: [2] fatal error event — server will close next")
+                except Exception as e:  # noqa: BLE001 - close codes reported below
+                    print(f"spike: [2] receiver ended: {type(e).__name__}: {e}")
+
+            chunks = [pcm[i:i + FRAME_BYTES] for i in range(0, len(pcm), FRAME_BYTES)]
+            print(f"spike: [2] streaming {len(pcm)} PCM bytes in {len(chunks)} "
+                  f"binary frames (~80 ms each, real-time paced)...")
+            receiver = asyncio.create_task(receive_events())
             try:
-                while True:
-                    msg = await asyncio.wait_for(ws.recv(), timeout=5)
-                    sh = shape_of(msg)
-                    sh["provisional"] = True
-                    shapes.append(sh)
-                    print(f"spike: [3] upstream type={sh['type']} keys={sh.get('keys')}")
-                    print(f"spike: [3] preview {sh.get('preview', '')[:200]}")
-                    if sh["type"] in ("usage", "session_end", "closed"):
-                        break
+                for i, chunk in enumerate(chunks):
+                    await ws.send(chunk)
+                    if i == 0:
+                        print(f"spike: [2] first binary frame {len(chunk)} bytes sent")
+                    await asyncio.sleep(0.08)
+            except Exception as e:  # noqa: BLE001 - spike reports, never raises
+                print(f"spike: [2] send failed: {type(e).__name__}: {e}")
+            # 3. Half-close input, keep reading until the server closes.
+            try:
+                await ws.send(json.dumps({"type": "endStream"}))
+                print("spike: [3] endStream sent, reading until close (15 s)...")
+            except Exception as e:  # noqa: BLE001 - spike reports, never raises
+                print(f"spike: [3] endStream send failed: {type(e).__name__}: {e}")
+            try:
+                await asyncio.wait_for(ws.wait_closed(), timeout=15)
             except asyncio.TimeoutError:
-                print("spike: [3] drain timed out (no terminal usage message seen)")
+                print("spike: [3] close not seen in 15 s; cancelling receiver")
+                receiver.cancel()
+            try:
+                await asyncio.wait_for(receiver, timeout=5)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                pass
+            shapes.extend(events)
+            print(f"spike: [3] close code={ws.close_code} reason={ws.close_reason!r}")
+            if ws.close_code == 1000:
+                print("spike: [3] normal completion")
     except Exception as e:  # noqa: BLE001 - spike reports, never raises
         print(f"spike: FAILED: {type(e).__name__}: {e}")
         return 1
 
-    # Key-free fixtures (shapes + sizes only, never the key or audio).
+    # Key-free fixtures (shapes + sizes only — never the key, whose value
+    # and "Bearer " prefix are both refused below).
     FIXTURE_DIR.mkdir(parents=True, exist_ok=True)
+    secret_markers = [key, "Bearer "]
     for name, obj in (
-        ("session_config.json", {**config, "provisional": True,
+        ("session_config.json", {**redacted, "provisional": True,
                                  "captured": "spike_voice_asr.py owner run"}),
-        ("pcm_stub.json", {"sample_rate_hz": SAMPLE_RATE_HZ, "encoding": "pcm16",
+        ("pcm_stub.json", {"sample_rate_hz": SAMPLE_RATE_HZ,
+                           "encoding": config["audioEncoding"],
                            "channels": 1, "seconds": seconds, "bytes": len(pcm),
                            "provisional": True,
                            "captured": "spike_voice_asr.py owner run"}),
     ):
         text = json.dumps(obj, indent=2, sort_keys=True)
-        for banned in ("Authorization", "api_key", "Bearer "):
-            if banned in text:
-                raise SystemExit(f"spike: refusing to write fixture containing {banned!r}")
+        for banned in secret_markers:
+            if banned and banned in text:
+                raise SystemExit("spike: refusing to write fixture containing key material")
         (FIXTURE_DIR / name).write_text(text + "\n", encoding="utf-8")
         print(f"spike: wrote {FIXTURE_DIR / name}")
     with (FIXTURE_DIR / "stream_shapes.jsonl").open("w", encoding="utf-8") as fh:
         for sh in shapes:
-            fh.write(json.dumps({**sh, "captured": "spike_voice_asr.py owner run"},
-                                sort_keys=True) + "\n")
+            line = json.dumps({**sh, "captured": "spike_voice_asr.py owner run"},
+                              sort_keys=True)
+            for banned in secret_markers:
+                if banned and banned in line:
+                    raise SystemExit("spike: refusing to write fixture containing key material")
+            fh.write(line + "\n")
     print(f"spike: wrote {FIXTURE_DIR / 'stream_shapes.jsonl'} ({len(shapes)} shapes)")
-    print(f"spike: outcome session_config_ack={'OK' if ok else 'FAIL'}")
+    print(f"spike: outcome handshake_ack={'OK' if ok else 'FAIL'}")
     return 0 if ok else 1
 
 

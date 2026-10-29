@@ -1,29 +1,56 @@
 """M7 ASR realtime proxy (plan .agents/plans/M7.md §1).
 
-Android streams PCM16 to the backend WS; the backend adds the Meta key
+Android streams PCM to the backend WS; the backend adds the Meta key
 upstream only and forwards partials verbatim. Each upstream final appends
 one hash-chained ``asr_segment`` event; partials are never events. Cost
 flows through the shared Meta tracker (``estimate_asr``); over-budget
 closes 4402. No Spark Open fallback for voice; transcripts never set
 probabilities (only ``test_result`` folds into posteriors).
 
-Live upstream wire format is PROVISIONAL until scripts/spike_voice_asr.py
-runs outside the sandbox (fixtures carry provisional:true). Every test
-below runs on provisional fixtures + a fake upstream; a fixture test
-asserts the flag so provisional data is never mistaken for verified.
+Upstream wire format follows ``docs/research/meta-voice/`` (Voice
+Transcribe realtime): the handshake is the first JSON text frame on
+``wss://api.meta.ai/v1/asr/realtime`` — camelCase ``audioEncoding``
+(``PCM_24KHZ``, the engine-native 16-bit mono rate the Android client
+captures), ``model``, ``mode`` (``PUSH_TO_TALK``: single voice-command
+turn), and ``keywords`` vocabulary biasing — with the credential inside
+``authorization.accessToken`` (``"Bearer <key>"``; the endpoint ignores
+the HTTP ``Authorization`` header). Audio goes as raw PCM binary frames
+paced at real time; ``{"type": "endStream"}`` ends input and the server
+is read until close 1000. Server events dispatch on ``type``
+(``transcript`` with a ``final`` flag, ``audioProgress``, ``speech*``,
+``speaker``, ``error``); unknown types are ignored.
+
+Key hygiene: ``session_config()`` is key-free (safe to log and fixture).
+``build_handshake()`` adds ``authorization`` only for the single upstream
+send; the key never reaches logs, fixtures, ``asr_segment`` events, or
+client frames (pinned by ``test_handshake_key_never_leaks`` with a
+frame-recording fake upstream).
+
+Live upstream fixtures under ``backend/tests/fixtures/asr/`` stay
+``provisional:true`` until the owner reruns ``scripts/spike_voice_asr.py``
+live; a fixture test asserts the flag so provisional data is never
+mistaken for verified.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import uuid
 from typing import Any, Awaitable, Callable
 
 from mmc.meta.budget import estimate_asr, get_tracker
 
 ASR_REALTIME_URL = os.environ.get("ASR_REALTIME_URL", "wss://api.meta.ai/v1/asr/realtime")
 ASR_MODEL = os.environ.get("MODEL_ASR", "muse-voice-transcribe-1.0")
-SAMPLE_RATE_HZ = 16000
+# Documented engine-native encoding (signed 16-bit little-endian mono at
+# 24 kHz = 48,000 bytes/s). Must match the Android capture rate
+# (VoiceAudioSpec.SAMPLE_RATE_HZ).
+AUDIO_ENCODING = "PCM_24KHZ"
+SAMPLE_RATE_HZ = 24000
+# Single-turn voice commands ("next test", "log 12.4 volts"): the client
+# delimits the turn with endStream; completion is a transcript final:true.
+ASR_MODE = "PUSH_TO_TALK"
 
 
 def build_biasing_list(pack: Any = None) -> list[str]:
@@ -65,26 +92,53 @@ def build_biasing_list(pack: Any = None) -> list[str]:
 
 
 def session_config(pack: Any = None) -> dict:
-    """Exact session_config frame the proxy sends upstream (spike pins it)."""
+    """Key-free handshake fields (safe to log, fixture, and shape-pin).
+
+    ``build_handshake`` adds ``authorization`` for the single upstream
+    send; this frame never carries the key.
+    """
     return {
-        "type": "session_config",
+        "audioEncoding": AUDIO_ENCODING,
         "model": ASR_MODEL,
-        "sample_rate_hz": SAMPLE_RATE_HZ,
-        "encoding": "pcm16",
-        "channels": 1,
+        "mode": ASR_MODE,
         "keywords": build_biasing_list(pack),
     }
 
 
+def build_handshake(config: dict, api_key: str) -> dict:
+    """Full first-frame handshake: config plus the in-frame credential."""
+    return {"authorization": {"accessToken": f"Bearer {api_key}"}, **config}
+
+
+def redacted_handshake(frame: dict) -> dict:
+    """Handshake with the credential removed (logging / fixtures)."""
+    return {k: v for k, v in frame.items() if k != "authorization"}
+
+
+def load_api_key() -> str:
+    """Runtime Meta key (never committed, never logged, never fixtured)."""
+    key = os.environ.get("MODEL_API_KEY", "").strip()
+    if not key:
+        raise RuntimeError("MODEL_API_KEY is not set (runtime only; never commit it)")
+    return key
+
+
 def _final_text(msg: dict) -> str:
-    for key in ("text", "transcript", "utterance"):
+    for key in ("transcript", "text", "utterance"):
         value = msg.get(key)
         if isinstance(value, str) and value.strip():
             return value.strip()
     return ""
 
 
-def _final_duration(msg: dict) -> float:
+def _final_duration_s(msg: dict) -> float:
+    # Documented progress unit is milliseconds (audioProcessedMs).
+    try:
+        ms = msg.get("audioProcessedMs", None)
+        if ms is not None:
+            return max(0.0, float(ms) / 1000.0)
+    except (TypeError, ValueError):
+        pass
     for key in ("duration_s", "duration", "audio_duration_s"):
         try:
             return max(0.0, float(msg.get(key, 0.0) or 0.0))
@@ -94,40 +148,100 @@ def _final_duration(msg: dict) -> float:
 
 
 def _is_final(msg: Any) -> bool:
-    return isinstance(msg, dict) and str(msg.get("type", "")).lower() in (
-        "final", "utterance_end", "transcript_final",
-    )
+    if not isinstance(msg, dict):
+        return False
+    kind = str(msg.get("type", ""))
+    if kind == "transcript":
+        return msg.get("final") is True
+    # Turn-completion event (ENDPOINTING/DIARIZATION modes); tolerated so a
+    # mode change still closes the turn instead of dropping its text.
+    if kind == "speechComplete":
+        return True
+    return kind.lower() in ("final", "utterance_end", "transcript_final")
 
 
 def _is_partial(msg: Any) -> bool:
-    return isinstance(msg, dict) and str(msg.get("type", "")).lower() in (
-        "partial", "transcript_partial",
-    )
+    if not isinstance(msg, dict):
+        return False
+    kind = str(msg.get("type", ""))
+    if kind == "transcript":
+        return msg.get("final") is not True
+    return kind.lower() in ("partial", "transcript_partial")
 
 
 UpstreamFactory = Callable[[dict], Awaitable[Any]]
 
 
-def default_upstream_factory(config: dict) -> Any:
-    """Production upstream dialer (pending owner spike).
+class _WsUpstream:
+    """Thin send/recv/close wrapper over a live Meta realtime socket."""
 
-    Raises until the spike pins the WS client library; DECISIONS records
-    the choice per AGENTS.md §8 when it lands. Tests always inject a fake.
+    def __init__(self, ws: Any) -> None:
+        self._ws = ws
+
+    async def send(self, data: Any) -> None:
+        await self._ws.send(data)
+
+    async def recv(self) -> Any:
+        return await self._ws.recv()
+
+    async def close(self) -> None:
+        try:
+            await self._ws.close()
+        except Exception:
+            pass
+
+
+async def default_upstream_factory(config: dict) -> Any:
+    """Dial Meta realtime: handshake first frame, ack before audio.
+
+    Sends ``build_handshake(config, key)`` as the first JSON text frame
+    (within the 10 s handshake deadline) and waits for the acknowledgement
+    — the only server frame with no ``type`` field, carrying ``sessionId``.
+    An ``error``-typed first frame raises with the server message.
     """
-    raise RuntimeError(
-        "live ASR upstream unavailable: no WS client chosen until "
-        "scripts/spike_voice_asr.py runs (see docs/DECISIONS.md M7)"
-    )
+    try:
+        import websockets  # type: ignore[import]
+    except ImportError as exc:
+        raise RuntimeError(
+            "live ASR upstream unavailable: install the 'websockets' "
+            "dependency (see backend/pyproject.toml)"
+        ) from exc
+    import asyncio as _asyncio
+
+    key = load_api_key()
+    session_id = f"mmc-{uuid.uuid4()}"
+    url = ASR_REALTIME_URL
+    if "?sessionId=" not in url and "&sessionId=" not in url:
+        sep = "&" if "?" in url else "?"
+        url = f"{url}{sep}sessionId={session_id}"
+    ws = await websockets.connect(url, open_timeout=30)
+    try:
+        await ws.send(json.dumps(build_handshake(config, key)))
+        raw = await _asyncio.wait_for(ws.recv(), timeout=10)
+        ack = json.loads(raw) if isinstance(raw, str) else raw
+        if not isinstance(ack, dict):
+            raise RuntimeError(f"ASR handshake failed: unexpected ack {ack!r:.200}")
+        if ack.get("type") == "error":
+            raise RuntimeError(f"ASR handshake failed: {ack.get('message', ack)!r:.200}")
+        if "sessionId" not in ack:
+            raise RuntimeError(f"ASR handshake failed: {ack!r:.200}")
+    except Exception:
+        try:
+            await ws.close()
+        except Exception:
+            pass
+        raise
+    return _WsUpstream(ws)
 
 
 class AsrProxy:
     """PCM in, partials verbatim out, finals to the event log.
 
-    ``upstream_factory`` receives the session_config frame and returns an
-    object with async ``send``/``recv``/``close`` (``send`` takes str|bytes,
-    ``recv`` returns str|bytes). ``append_event`` persists one asr_segment;
-    ``send_to_client`` forwards text frames; ``tracker`` defaults to the
-    shared Meta ledger.
+    ``upstream_factory`` receives the key-free ``session_config`` frame and
+    returns an object with async ``send``/``recv``/``close`` (``send`` takes
+    str|bytes, ``recv`` returns str|bytes). ``append_event`` persists one
+    asr_segment; ``send_to_client`` forwards text frames; ``tracker``
+    defaults to the shared Meta ledger.
     """
 
     def __init__(
@@ -152,7 +266,7 @@ class AsrProxy:
         from mmc import voice_commands as vc_mod
 
         text = _final_text(msg)
-        duration_s = _final_duration(msg)
+        duration_s = _final_duration_s(msg)
         # Budget: pre-check the estimate, then ledger the actual seconds.
         self.tracker.check(estimate_asr(duration_s or 1.0))
         payload = {
@@ -175,9 +289,11 @@ class AsrProxy:
         """Bridge one client socket to one upstream connection.
 
         Control frames from the client are JSON text (start/stop); binary
-        frames are PCM16 forwarded verbatim. Upstream partials forward
-        verbatim; finals persist + forward. Over-budget calls
-        ``on_budget_exceeded`` (the route closes 4402) instead of appending.
+        frames are PCM (``AUDIO_ENCODING``) forwarded verbatim. Upstream
+        transcript partials forward verbatim; finals persist + forward.
+        ``stop`` half-closes upstream input via ``endStream`` while pending
+        results are still read. Over-budget calls ``on_budget_exceeded``
+        (the route closes 4402) instead of appending.
         """
         from mmc.meta.budget import BudgetExceeded
 
@@ -214,9 +330,23 @@ class AsrProxy:
                         await _send(json.dumps(
                             {"type": "final", **payload}, sort_keys=True
                         ))
-                    elif str(msg.get("type", "")).lower() in ("usage", "session_end"):
-                        await _send(json.dumps(msg, sort_keys=True))
+                    elif isinstance(msg, dict) and msg.get("type") == "error":
+                        # Fatal server event (client-safe message only):
+                        # forward it, then stop — the server closes next.
+                        try:
+                            await _send(json.dumps(
+                                {"type": "error",
+                                 "message": str(msg.get("message", "ASR error"))},
+                                sort_keys=True,
+                            ))
+                        except Exception:
+                            pass
                         return
+                    # audioProgress / speechStart / speechEnd / speaker /
+                    # unknown: progress, boundary and speaker labels stay
+                    # upstream — the client renders transcript partials and
+                    # finals. Unknown types are ignored per the realtime
+                    # spec. (speechComplete takes the _is_final path above.)
             except Exception:
                 return
 
@@ -245,10 +375,10 @@ class AsrProxy:
                             continue
                         if isinstance(ctl, dict) and ctl.get("type") == "stop":
                             try:
-                                await upstream.send(text)
+                                await upstream.send(json.dumps({"type": "endStream"}))
                             except Exception:
                                 break
-                        # "start" needs no upstream frame beyond session_config.
+                        # "start" needs no upstream frame beyond the handshake.
                 elif isinstance(incoming, (bytes, bytearray)):
                     try:
                         await upstream.send(bytes(incoming))
@@ -261,7 +391,7 @@ class AsrProxy:
                         continue
                     if isinstance(ctl, dict) and ctl.get("type") == "stop":
                         try:
-                            await upstream.send(incoming)
+                            await upstream.send(json.dumps({"type": "endStream"}))
                         except Exception:
                             break
                 if pump.done():

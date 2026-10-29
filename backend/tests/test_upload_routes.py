@@ -175,6 +175,7 @@ def _write_clip(path, width: int = 320, height: int = 240) -> bytes:
     return path.read_bytes()
 
 
+@pytest.mark.needs_ffmpeg  # _write_clip needs the ffmpeg binary (apt-get install ffmpeg)
 def test_live_video_analyze_returns_boxes_then_masks(client, tmp_path, monkeypatch):
     """Deferred live path: boxes + events return right away with
     overlays_pending; pool-converted masks land in session state (the WS

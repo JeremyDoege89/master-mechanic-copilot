@@ -5,9 +5,15 @@ package dev.dreamz.mmc.voice
  *
  * OkHttp WebSocket to `/sessions/{id}/asr` — same URL lifecycle as
  * [dev.dreamz.mmc.session.SessionClient.openStateSocket]: the base HTTP
- * URL becomes ws(s), then the session path. Binary frames are PCM16
- * 16 kHz mono ([VoiceAudioSpec]); text frames are JSON control frames
- * (`start`/`stop`). The backend adds the Meta key upstream only.
+ * URL becomes ws(s), then the session path. Binary frames are PCM 24 kHz
+ * mono ([VoiceAudioSpec], the upstream `PCM_24KHZ` native rate); text
+ * frames are JSON control frames (`start`/`stop`). The backend adds the
+ * Meta key upstream only.
+ *
+ * Inbound frames mirror the upstream realtime shapes the proxy forwards:
+ * `transcript` events carry a `final` flag (partials replace the previous
+ * caption; `final: true` closes the PUSH_TO_TALK turn), confirmed finals
+ * arrive as the proxy's `{"type":"final"}` frame.
  *
  * Pure Kotlin (no Android framework) so it stays unit-testable on the JVM.
  */
@@ -27,13 +33,16 @@ class RealtimeAsrClient(baseUrl: String, private val sessionId: String) {
     /** True when an upstream text frame is a live-caption partial. */
     fun isPartial(frame: String): Boolean {
         val t = frameType(frame) ?: return false
+        if (t == "transcript") return frameFinal(frame) != true
         return t == "partial" || t == "transcript_partial"
     }
 
     /** True when an upstream text frame is a confirmed final. */
     fun isFinal(frame: String): Boolean {
         val t = frameType(frame) ?: return false
-        return t == "final" || t == "utterance_end" || t == "transcript_final"
+        if (t == "transcript") return frameFinal(frame) == true
+        return t == "final" || t == "utterance_end" || t == "transcript_final" ||
+            t == "speechcomplete"
     }
 
     private fun frameType(frame: String): String? {
@@ -48,11 +57,32 @@ class RealtimeAsrClient(baseUrl: String, private val sessionId: String) {
         if (second < 0) return null
         return frame.substring(first + 1, second).lowercase()
     }
+
+    /** Value of the `transcript` event `final` flag, null when absent. */
+    private fun frameFinal(frame: String): Boolean? {
+        val key = "\"final\""
+        val i = frame.indexOf(key)
+        if (i < 0) return null
+        val colon = frame.indexOf(':', i + key.length)
+        if (colon < 0) return null
+        val rest = frame.substring(colon + 1).trimStart()
+        return when {
+            rest.startsWith("true") -> true
+            rest.startsWith("false") -> false
+            else -> null
+        }
+    }
 }
 
-/** PCM16 16 kHz mono capture spec (mirrors EngineSoundRecorder settings). */
+/**
+ * PCM 24 kHz mono capture spec.
+ *
+ * Must match the backend proxy's upstream `audioEncoding` (`PCM_24KHZ`,
+ * the engine-native rate — see `backend/mmc/meta/voice.py`); resampling
+ * happens server-side only for `PCM_16KHZ`, which we do not send.
+ */
 object VoiceAudioSpec {
-    const val SAMPLE_RATE_HZ = 16000
+    const val SAMPLE_RATE_HZ = 24000
     const val CHANNELS = 1
     const val BITS_PER_SAMPLE = 16
     const val PERMISSION = android.Manifest.permission.RECORD_AUDIO

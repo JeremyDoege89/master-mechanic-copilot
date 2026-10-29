@@ -2,7 +2,7 @@
 name = "mmc"
 version = "0.1.0"
 description = "Master Mechanic Copilot backend"
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.13"
 dependencies = [
   "fastapi>=0.115",
   "uvicorn>=0.30",
@@ -13,6 +13,7 @@ dependencies = [
   "jinja2>=3.1",  # report HTML rendering (autoescape on); stdlib-only PDF needs none
   "openai>=1.0",  # Meta Model API via OpenAI SDK (AGENTS.md Meta client rules)
   "meta-sam-parser>=0.1.0",
+  "websockets>=17",  # Meta Voice Transcribe realtime upstream WS client (owner-verified 17.3)
 ]
 readme = "README.md"
 
@@ -32,4 +33,5 @@ dev = [
 testpaths = ["tests"]
 markers = [
   "slow: full-stream SAM test (seconds to a minute; runs in CI, deselect locally with -m 'not slow')",
+  "needs_ffmpeg: test shells out to the ffmpeg/ffprobe binaries (apt-get install ffmpeg)",
 ]

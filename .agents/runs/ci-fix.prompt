@@ -1,0 +1,19 @@
+GitHub CI (backend job) has failed on every push since the SAM perf commit (27aab8c); locally everything passes. The
+latest run: 10 failed, 440 passed. Causes from the log:
+- No ffmpeg on the runner: test_sam_perf.py downscale tests, test_upload_routes.py::test_live_video_analyze_returns_
+  boxes_then_masks -> FileNotFoundError 'ffmpeg'; test_downscale_image_caps_long_side and the two segment_image scale
+  tests silently pass through unscaled (1280 vs 640) when ffmpeg is missing.
+- The runner's uv picked Python 3.14 (/usr/lib/python3.14); the project targets 3.12.
+- tests/test_shared_budget.py (two tests) need MODEL_API_KEY in the env (MetaClientError: MODEL_API_KEY is not set);
+  it's set on the dev box only.
+- tests/test_modal_app.py::test_create_app_serves_api_and_web_offline gets 404 because web/dist isn't built in the
+  backend job.
+Fix: in .github/workflows/ci.yml install ffmpeg (apt-get) in the backend job and pin Python 3.12 for uv (setup-uv
+python-version or `uv python pin 3.12` / requires-python); make tests that construct clients set a dummy key with
+monkeypatch instead of relying on the environment; make the modal web test build a tiny temporary dist itself instead
+of needing web/dist. Also make the code fail loudly (clear error) rather than silently skip downscaling when ffmpeg is
+missing in a path that needs it. Add scripts/ci_parity.sh that runs the backend suite the way CI does: `env -u
+MODEL_API_KEY -u BASETEN_API_KEY`, a PATH without ffmpeg for a marked subset to prove the error message, and Python 3.12.
+Do not touch backend/mmc/meta/voice.py, voice_commands.py, android/, web/src/components/SamOverlay.tsx or
+backend/mmc/report/ (other jobs are editing them). Run the backend suite and scripts/ci_parity.sh until green. Never print, echo or log the value of any API key or env secret (MODEL_API_KEY, BASETEN_API_KEY, MMC_VIN_KEY); check
+presence only with `test -n "${VAR:-}" && echo set || echo unset`. Do not commit. Foreground only.

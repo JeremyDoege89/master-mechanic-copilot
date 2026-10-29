@@ -602,6 +602,8 @@ export default function Replay({ autoJudge, onReport, onLatestReport }: Props) {
                     masks?: OverlayMask[];
                   }[] | undefined) ?? [];
                   const masks = overlays.flatMap((o) => o.masks ?? []);
+                  const overlayConcept =
+                    overlays[0]?.used_concept ?? overlays[0]?.concept ?? undefined;
                   const { w, h } = overlayExtent(masks);
                   // Keyframe photo served by GET /sessions/{id}/blobs/{sha256},
                   // which only streams blobs this session's log references.
@@ -671,11 +673,7 @@ export default function Replay({ autoJudge, onReport, onLatestReport }: Props) {
                           height={h}
                           masks={masks}
                           labels={compLabels}
-                          label={
-                            imageUrl
-                              ? `Recorded overlay (${masks.length} masks)`
-                              : `Recorded overlay (${masks.length} masks; photo bytes are not bundled)`
-                          }
+                          label={`SAM 3.1 found ${masks.length} candidate${masks.length === 1 ? "" : "s"} for "${overlayConcept ?? compLabels[0] ?? "candidate"}"; scores are SAM's own confidence, not a confirmed match.`}
                         />
                       ) : null}
                     </li>

@@ -39,9 +39,9 @@ function scoreOf(m: Mask): number {
 
 /** SAM overlay viewer: keyframe photo plus SVG mask paths/boxes.
  *
- * Judge fix M7 §2.3a: every candidate shows its confidence; the
- * highest-confidence mask renders as the match and the rest render faint,
- * labelled "other candidates". Display-only: recorded masks are unchanged.
+ * Confidence is not identity: every candidate renders with equal styling,
+ * labelled "<concept>? <score>", in score order. No candidate is called the
+ * match. Display-only: recorded masks are unchanged.
  */
 export default function SamOverlay({ imageUrl, width, height, masks, labels, label }: Props) {
   // Mask coordinates arrive in the photo's pixel space, so the SVG
@@ -51,28 +51,33 @@ export default function SamOverlay({ imageUrl, width, height, masks, labels, lab
   const vw = natural?.w ?? width;
   const vh = natural?.h ?? height;
   const found = masks.filter((m) => m.found !== false && (m.svg_path || m.box));
-  // Rank highest-confidence first; explicit rank_label wins when present.
+  // Highest confidence first. rank_label is ignored: it never decides styling.
   const ranked = [...found].sort((a, b) => scoreOf(b) - scoreOf(a));
-  const matchIdx = ranked.findIndex((m) => m.rank_label === "match");
-  const match = matchIdx >= 0 ? ranked[matchIdx] : ranked[0];
-  const others = ranked.filter((m) => m !== match);
   const names = (labels ?? []).length > 0
     ? (labels ?? [])
     : [...new Set(found.map((m) => m.used_concept ?? m.concept).filter(Boolean) as string[])];
+  const conceptFor = (m: Mask): string =>
+    m.used_concept ?? m.concept ?? names[0] ?? "candidate";
   const fmtScore = (m: Mask) => (typeof m.score === "number" ? m.score.toFixed(2) : "—");
+  const tag = (m: Mask) => `${conceptFor(m)}? ${fmtScore(m)}`;
+  const caption =
+    names.length > 0
+      ? `SAM 3.1 found ${ranked.length} candidate${ranked.length === 1 ? "" : "s"} for "${names.join('", "')}"; scores are SAM's own confidence, not a confirmed match.`
+      : `SAM 3.1 found ${ranked.length} candidate${ranked.length === 1 ? "" : "s"}; scores are SAM's own confidence, not a confirmed match.`;
   // Overlay coordinates arrive in mixed scales (normalised vs pixel); the SVG
   // viewBox keeps them visible either way and boxes render as outlines.
-  const renderMask = (m: Mask, i: number, isMatch: boolean, keyBase: string) => {
+  // Every candidate shares one style: equal opacity, stroke and fill.
+  const renderMask = (m: Mask, i: number, keyBase: string) => {
     const b = boxOf(m.box);
     return (
-      <g key={`${keyBase}-${i}`} opacity={isMatch ? 1 : 0.35}>
-        <title>{`${isMatch ? "match" : "other candidate"} ${fmtScore(m)}`}</title>
+      <g key={`${keyBase}-${i}`} opacity={1}>
+        <title>{tag(m)}</title>
         {m.svg_path ? (
           <path
             d={m.svg_path}
-            fill={isMatch ? "rgba(217,72,15,0.22)" : "rgba(107,98,89,0.12)"}
-            stroke={isMatch ? "#d9480f" : "#6b6259"}
-            strokeWidth={isMatch ? 2 : 1}
+            fill="rgba(217,72,15,0.22)"
+            stroke="#d9480f"
+            strokeWidth={2}
           />
         ) : null}
         {b ? (
@@ -82,13 +87,13 @@ export default function SamOverlay({ imageUrl, width, height, masks, labels, lab
             width={b.w}
             height={b.h}
             fill="none"
-            stroke={isMatch ? "#d9480f" : "#6b6259"}
-            strokeWidth={isMatch ? 3 : 1}
+            stroke="#d9480f"
+            strokeWidth={3}
           />
         ) : null}
         {b ? (
-          <text x={b.x + 2} y={Math.max(10, b.y - 4)} fontSize={12} fill={isMatch ? "#d9480f" : "#6b6259"}>
-            {isMatch ? `match ${fmtScore(m)}` : `other candidate ${fmtScore(m)}`}
+          <text x={b.x + 2} y={Math.max(10, b.y - 4)} fontSize={12} fill="#d9480f">
+            {tag(m)}
           </text>
         ) : null}
       </g>
@@ -116,8 +121,7 @@ export default function SamOverlay({ imageUrl, width, height, masks, labels, lab
             }}
           />
           <svg viewBox={`0 0 ${vw} ${vh}`} width="100%" role="img" aria-label="SAM overlays">
-            {match ? renderMask(match, 0, true, "match") : null}
-            {others.map((m, i) => renderMask(m, i, false, "other"))}
+            {ranked.map((m, i) => renderMask(m, i, "candidate"))}
           </svg>
         </span>
       ) : (
@@ -130,32 +134,16 @@ export default function SamOverlay({ imageUrl, width, height, masks, labels, lab
             <text x={width / 2} y={height / 2 + 18} fontSize={14} textAnchor="middle" fill="var(--muted)">
               recorded overlay shapes below
             </text>
-            {match && boxOf(match.box) ? (
-              <g>
-                <rect
-                  x={boxOf(match.box)!.x}
-                  y={boxOf(match.box)!.y}
-                  width={boxOf(match.box)!.w}
-                  height={boxOf(match.box)!.h}
-                  fill="rgba(217,72,15,0.18)"
-                  stroke="#d9480f"
-                  strokeWidth={4}
-                />
-                <text x={boxOf(match.box)!.x + 2} y={Math.max(12, boxOf(match.box)!.y - 4)} fontSize={12} fill="#d9480f">
-                  {`match ${fmtScore(match)}`}
-                </text>
-              </g>
-            ) : null}
-            {others.slice(0, 11).map((m, i) => {
+            {ranked.slice(0, 12).map((m, i) => {
               const b = boxOf(m.box);
               return (
-                <g key={i} opacity={0.35}>
+                <g key={i} opacity={1}>
                   {b ? (
-                    <rect x={b.x} y={b.y} width={b.w} height={b.h} fill="rgba(107,98,89,0.10)" stroke="#6b6259" strokeWidth={2} />
+                    <rect x={b.x} y={b.y} width={b.w} height={b.h} fill="rgba(217,72,15,0.18)" stroke="#d9480f" strokeWidth={4} />
                   ) : null}
                   {b ? (
-                    <text x={b.x + 2} y={Math.max(12, b.y - 4)} fontSize={12} fill="#6b6259">
-                      {`other candidate ${fmtScore(m)}`}
+                    <text x={b.x + 2} y={Math.max(12, b.y - 4)} fontSize={12} fill="#d9480f">
+                      {tag(m)}
                     </text>
                   ) : null}
                 </g>
@@ -170,10 +158,7 @@ export default function SamOverlay({ imageUrl, width, height, masks, labels, lab
           : names.map((n, i) => (
               <span key={`${n}-${i}`} className="badge ai">{n}</span>
             ))}
-        {match ? <span className="badge ai">match {fmtScore(match)}</span> : null}
-        {others.length > 0 ? (
-          <span className="badge">other candidates: {others.map(fmtScore).join(", ")}</span>
-        ) : null}
+        {found.length > 0 ? <span className="sam-caption">{caption}</span> : null}
       </figcaption>
     </figure>
   );

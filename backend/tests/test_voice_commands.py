@@ -68,8 +68,18 @@ def test_asr_fixtures_stay_provisional():
     import json
     from pathlib import Path
 
+    from mmc.meta import voice as voice_mod
+
     base = Path(__file__).parent / "fixtures" / "asr"
     config = json.loads((base / "session_config.json").read_text())
     assert config["provisional"] is True
+    # Documented handshake shape, redacted: no credential field names or
+    # values anywhere in the committed fixtures.
+    assert set(config) - {"captured", "provisional"} == set(voice_mod.session_config())
+    for name in ("session_config.json", "pcm_stub.json", "stream_shapes.jsonl"):
+        text = (base / name).read_text()
+        assert "Bearer " not in text
+        assert "authorization" not in text
+        assert "accessToken" not in text
     for line in (base / "stream_shapes.jsonl").read_text().splitlines():
         assert json.loads(line)["provisional"] is True

@@ -109,11 +109,22 @@ def test_create_app_serves_api_and_web_offline(tmp_path, monkeypatch):
     # no later test observes the public deployment.
     from mmc.main import app as shared_app
 
+    # The backend job has no built web/dist: stage a tiny temporary one
+    # (index + one asset) so this test never needs the real web build.
+    dist = tmp_path / "dist"
+    (dist / "assets").mkdir(parents=True)
+    (dist / "index.html").write_text(
+        '<!doctype html><html><body><div id="root"></div>'
+        '<script src="/assets/app.js"></script></body></html>',
+        encoding="utf-8",
+    )
+    (dist / "assets" / "app.js").write_text("// test stub", encoding="utf-8")
+
     saved_env = {key: os.environ.get(key) for key in module.MODAL_ENV}
     saved_routes = len(shared_app.routes)
     saved_mounted = getattr(shared_app, "_mmc_web_mounted", False)
     try:
-        app = module.create_app()
+        app = module.create_app(web_dist=dist)
         assert module.MODAL_ENV["MMC_PUBLIC_MODE"] == "replay"
         assert os.environ["MMC_PUBLIC_MODE"] == "replay"
         # Seeded judge fixture lands in the data dir on boot.

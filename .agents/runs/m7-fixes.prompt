@@ -1,0 +1,18 @@
+Fix every finding in .agents/reviews/M7.md (a Wonder review; #1-#5 and #11 are blocking). Read it fully first. For each
+finding: a failing test reproducing the scenario, then the fix, then the test passes. Specifics:
+- #4 first: the acceptance sweep must report FAIL whenever any underlying command exits non-zero or reports failures
+  (check exit codes and pytest/gradle summaries, never grep for a word); prove it with a test that feeds it a failing
+  command.
+- #2: Android voice must actually work end to end (mic -> /asr -> captions -> parsed intent -> Confirm calls the real
+  route and reports the real result or the real error). Confirm must never claim success it didn't get.
+- Voice fixtures are now LIVE: I reran scripts/spike_voice_asr.py with real speech (a WAV of "one, three, five"); the
+  realtime API streamed partial transcripts "one," -> "one, three," -> "one, three, five." then a final
+  {"final": true, "transcript": "one, three, five."} and closed 1000 "No more transcript segments". The spike rewrote
+  backend/tests/fixtures/asr/*. Flip them to live (provisional false), keep them key-free, and replay them in the proxy
+  tests, including the empty-final case (a tone gives final "" and must not create an asr_segment).
+- #14: use real P030n codes in the demo transcripts; regenerate the bundles offline (make_demo_bundle.py; re-key the
+  demo cache offline if needed, live outputs untouched) and keep --check green.
+Never print, echo or log the value of any API key or env secret; check presence only with `test -n`. Keep the backend
+suite under 3 minutes. Run the backend suite, scripts/ci_parity.sh, make_demo_bundle.py --check, replay_check, the
+Android build (offline, seeded GRADLE_USER_HOME) and the web build until green, then the fixed acceptance sweep. Add a
+dated docs/DECISIONS.md entry. Do not commit. Foreground only. Finish with a table: finding #, fix, test name, status.

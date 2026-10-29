@@ -672,7 +672,8 @@ async def session_asr(websocket: WebSocket, session_id: str):
     except WebSocketDisconnect:
         pass
     except RuntimeError:
-        # No live upstream until the owner spike pins the WS client lib.
+        # Server misconfigured for live ASR (no MODEL_API_KEY or no
+        # websockets package): the proxy factory raises before dialling.
         try:
             await websocket.close(code=4500)
         except Exception:

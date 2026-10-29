@@ -59,9 +59,9 @@ def model_pins() -> dict:
 
 
 def rank_overlay_masks(masks: list) -> list:
-    """Rank SAM candidate masks by confidence (judge fix M7 §2.3a).
+    """Order SAM candidate masks by confidence, highest first.
 
-    Highest score is the ``match``; the rest are ``other candidate``.
+    Confidence is not identity: no candidate is labelled a ``match``.
     Display-only: never mutates the recorded evidence.
     """
     def _score(mask: Any) -> float:
@@ -72,9 +72,9 @@ def rank_overlay_masks(masks: list) -> list:
 
     ranked = sorted(list(masks or []), key=_score, reverse=True)
     out = []
-    for i, mask in enumerate(ranked):
+    for mask in ranked:
         entry = dict(mask)
-        entry["rank_label"] = "match" if i == 0 else "other candidate"
+        entry.pop("rank_label", None)
         out.append(entry)
     return out
 
@@ -211,8 +211,8 @@ def build_report(session: Any, state: dict) -> dict:
                 "kind": "image",
                 "note": "SAM overlays for this keyframe are served with the vision response.",
                 "overlays": rows,
-                # Ranked display copy (match + other candidates with
-                # confidences). The recorded evidence is untouched.
+                # Score-ordered display copy (confidences only, no
+                # match claim). The recorded evidence is untouched.
                 "masks": rank_overlay_masks(
                     [m for overlay in rows for m in overlay.get("masks", [])]
                 ),

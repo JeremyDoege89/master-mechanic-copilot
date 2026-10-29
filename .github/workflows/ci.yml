@@ -10,7 +10,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
-      - run: cd backend && uv run pytest -q
+        with:
+          python-version: "3.12"
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - run: cd backend && uv run --python 3.12 pytest -q
       - run: scripts/replay_check.sh backend/tests/fixtures/sessions/*.mmrec
 
 

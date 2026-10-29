@@ -54,6 +54,8 @@ def test_two_default_meta_clients_share_spend(tmp_path):
 
 def test_two_vision_binds_share_spend(tmp_path, monkeypatch):
     """The finding #1 probe: two successive bind() calls, $50 on the first."""
+    # bind() builds a default MetaClient: use a dummy key, never the env.
+    monkeypatch.setenv("MODEL_API_KEY", "test-key-not-a-secret")
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     from mmc import sessions as sess_mod
     from mmc.api import routes_vision as rv
@@ -72,6 +74,8 @@ def test_two_vision_binds_share_spend(tmp_path, monkeypatch):
 
 
 def test_two_upload_binds_share_spend(tmp_path, monkeypatch):
+    # bind() builds a default MetaClient: use a dummy key, never the env.
+    monkeypatch.setenv("MODEL_API_KEY", "test-key-not-a-secret")
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     from mmc import sessions as sess_mod
     from mmc.api import routes_uploads as ru
