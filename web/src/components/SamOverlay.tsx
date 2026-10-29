@@ -10,6 +10,7 @@ interface Mask {
 }
 
 import { useState } from "react";
+import { hasScores, samCandidateLabel, samCaption } from "../samLabels";
 
 interface Props {
   imageUrl?: string;
@@ -40,8 +41,9 @@ function scoreOf(m: Mask): number {
 /** SAM overlay viewer: keyframe photo plus SVG mask paths/boxes.
  *
  * Confidence is not identity: every candidate renders with equal styling,
- * labelled "<concept>? <score>", in score order. No candidate is called the
- * match. Display-only: recorded masks are unchanged.
+ * labelled "<concept>? <score>" in score order — or "<concept>? (1)",
+ * "(2)", ... when the recording carries no per-mask score. No candidate
+ * is called the match. Display-only: recorded masks are unchanged.
  */
 export default function SamOverlay({ imageUrl, width, height, masks, labels, label }: Props) {
   // Mask coordinates arrive in the photo's pixel space, so the SVG
@@ -58,12 +60,10 @@ export default function SamOverlay({ imageUrl, width, height, masks, labels, lab
     : [...new Set(found.map((m) => m.used_concept ?? m.concept).filter(Boolean) as string[])];
   const conceptFor = (m: Mask): string =>
     m.used_concept ?? m.concept ?? names[0] ?? "candidate";
-  const fmtScore = (m: Mask) => (typeof m.score === "number" ? m.score.toFixed(2) : "—");
-  const tag = (m: Mask) => `${conceptFor(m)}? ${fmtScore(m)}`;
-  const caption =
-    names.length > 0
-      ? `SAM 3.1 found ${ranked.length} candidate${ranked.length === 1 ? "" : "s"} for "${names.join('", "')}"; scores are SAM's own confidence, not a confirmed match.`
-      : `SAM 3.1 found ${ranked.length} candidate${ranked.length === 1 ? "" : "s"}; scores are SAM's own confidence, not a confirmed match.`;
+  // Position is 1-based display (score) order; scoreless masks keep
+  // recorded order because the sort above is stable.
+  const tag = (m: Mask, i: number) => samCandidateLabel(conceptFor(m), m.score, i + 1);
+  const caption = samCaption(names, ranked.length, hasScores(ranked));
   // Overlay coordinates arrive in mixed scales (normalised vs pixel); the SVG
   // viewBox keeps them visible either way and boxes render as outlines.
   // Every candidate shares one style: equal opacity, stroke and fill.
@@ -71,7 +71,7 @@ export default function SamOverlay({ imageUrl, width, height, masks, labels, lab
     const b = boxOf(m.box);
     return (
       <g key={`${keyBase}-${i}`} opacity={1}>
-        <title>{tag(m)}</title>
+        <title>{tag(m, i)}</title>
         {m.svg_path ? (
           <path
             d={m.svg_path}
@@ -93,7 +93,7 @@ export default function SamOverlay({ imageUrl, width, height, masks, labels, lab
         ) : null}
         {b ? (
           <text x={b.x + 2} y={Math.max(10, b.y - 4)} fontSize={12} fill="#d9480f">
-            {tag(m)}
+            {tag(m, i)}
           </text>
         ) : null}
       </g>
@@ -143,7 +143,7 @@ export default function SamOverlay({ imageUrl, width, height, masks, labels, lab
                   ) : null}
                   {b ? (
                     <text x={b.x + 2} y={Math.max(12, b.y - 4)} fontSize={12} fill="#d9480f">
-                      {tag(m)}
+                      {tag(m, i)}
                     </text>
                   ) : null}
                 </g>

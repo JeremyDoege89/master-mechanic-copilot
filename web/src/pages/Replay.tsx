@@ -12,6 +12,7 @@ import {
 import { describeEvent, gateLabel, prettyRef, testTitle } from "../labels";
 import HypothesisChart from "../components/HypothesisChart";
 import SamOverlay from "../components/SamOverlay";
+import { hasScores, samCaption } from "../samLabels";
 
 interface Props {
   autoJudge?: boolean;
@@ -673,7 +674,11 @@ export default function Replay({ autoJudge, onReport, onLatestReport }: Props) {
                           height={h}
                           masks={masks}
                           labels={compLabels}
-                          label={`SAM 3.1 found ${masks.length} candidate${masks.length === 1 ? "" : "s"} for "${overlayConcept ?? compLabels[0] ?? "candidate"}"; scores are SAM's own confidence, not a confirmed match.`}
+                          label={samCaption(
+                            [overlayConcept ?? compLabels[0] ?? "candidate"],
+                            masks.length,
+                            hasScores(masks),
+                          )}
                         />
                       ) : null}
                     </li>

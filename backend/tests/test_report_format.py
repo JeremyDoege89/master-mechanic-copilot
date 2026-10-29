@@ -167,6 +167,59 @@ def _minimal_report() -> dict:
     }
 
 
+def _report_with_overlays() -> dict:
+    report = _minimal_report()
+    report["sam_overlays"] = [
+        {
+            "evidence_id": "e" * 32,
+            "blob_ref": "blobs/" + "a" * 64,
+            "kind": "image",
+            "note": "n",
+            "overlays": [
+                {
+                    "concept": "battery",
+                    "used_concept": "battery",
+                    "found": True,
+                    # Recorded SAM stream: no per-mask score.
+                    "masks": [
+                        {"object_id": "0", "score": None},
+                        {"object_id": "1", "score": None},
+                        {"object_id": "2", "score": None},
+                    ],
+                },
+                {
+                    "concept": "terminal",
+                    "used_concept": "terminal",
+                    "found": True,
+                    "masks": [
+                        {"object_id": "o2", "score": 0.93},
+                        {"object_id": "o1", "score": 0.61},
+                    ],
+                },
+            ],
+            "masks": [],
+        }
+    ]
+    return report
+
+
+def test_render_html_scoreless_masks_use_ordinals_and_no_confidence_caption():
+    report = _report_with_overlays()
+    before = json.dumps(report, sort_keys=True)
+    html = render_html(report)
+    assert json.dumps(report, sort_keys=True) == before
+    # Scoreless candidates are ordinals, never a "—" confidence label.
+    assert "battery? (1)" in html
+    assert "battery? (2)" in html
+    assert "battery? (3)" in html
+    assert ("battery? —" not in html) and ("battery? -" not in html)
+    assert html.count("no per-candidate confidence") == 1
+    assert "none is marked as the match" in html
+    # Scored candidates keep the score wording.
+    assert "0.93" in html
+    assert "scores are SAM&#39;s own confidence, not a confirmed match" in html
+
+
 def test_render_html_uses_human_strings_and_leaves_json_byte_exact():
     report = _minimal_report()
     before = json.dumps(report, sort_keys=True)

@@ -52,6 +52,8 @@ const { chromium } = require('playwright-core');
   });
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
   page.on('console', (m) => { if (m.type() === 'error') console.log('page:', m.text().slice(0, 200)); });
+  // Judge runs must stay 4xx-free: print every >= 400 response (URL + status).
+  page.on('response', (r) => { if (r.status() >= 400) console.log('http ' + r.status() + ' ' + r.url().slice(0, 220)); });
   await page.goto(base + '/?judge=1', { waitUntil: 'networkidle' });
   await page.getByRole('button', { name: 'Play the investigation' }).click();
   // Let autoplay advance into the trim/sound evidence (2x speed).

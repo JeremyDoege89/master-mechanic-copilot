@@ -1,0 +1,22 @@
+You are writing, not coding. Do not edit any repo file; scratch files under /tmp are fine. Give the result as your
+final answer (it is saved to docs/VIDEO.md for you).
+
+Read README.md, docs/JUDGES.md, docs/PLAN.md (Day 6: demo footage Monday daytime, rested; video <= 3:00, target 2:45),
+docs/RULES.md (judging criteria: impact, Meta tooling, demo, technical depth; "anti-projects": don't look like a simple
+image analyzer), docs/SPEC.md §3 and §8 (safety), the research doc's video section in docs/research/, and the live
+judge flow described in JUDGES.md.
+
+Write a demo video plan for a solo builder with a phone, a Ford in a driveway, a laptop and a screen recorder:
+1. A 2:45 timed script: beat-by-beat table (timecode, what's on screen, voice-over line, which judging criterion it
+   serves). Open with the problem in one line, show a real car with the check-engine light, the phone reading live OBD,
+   camera with SAM overlays, voice "next test" hands-free, the probabilities converging with the trace, the safety
+   checklist, the report with the Wonder review, then the judge site replay at $0, then the Meta model map. End with
+   the one-line pitch.
+2. Shot list grouped by location (driveway/car, phone screen recording, laptop screen recording), with exact
+   settings: phone screen recording via adb (scrcpy --record or `adb shell screenrecord`), laptop via OBS or ffmpeg
+   x11grab, 1080p, what to have pre-loaded, and B-roll.
+3. Safety notes for filming (engine running only outdoors, hands clear of the fan and belts, no planted faults on a
+   tired day, a second person if possible) consistent with SPEC §8.
+4. Voice-over recording tips and a simple edit plan (ffmpeg or a free editor), captions, music-free or licence-free.
+5. A fallback cut if the Ford recordings aren't ready: everything from the simulator bundles, labelled as simulated.
+Keep it under 200 lines.

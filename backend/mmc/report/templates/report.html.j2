@@ -114,13 +114,19 @@ pre { white-space: pre-wrap; word-break: break-word; background: var(--card); bo
 {% for ov in report.sam_overlays %}
 <h3>Keyframe <span class="muted">{{ ov.evidence_id[:8] }}…</span> ({{ ov.overlays|length }} concept{{ "s" if ov.overlays|length != 1 else "" }})</h3>
 {% for concept in ov.overlays %}
-<p><strong>{{ concept.used_concept or concept.concept }}</strong>{% if concept.found %} <span class="badge ai">found</span>{% else %} <span class="muted">not found</span>{% endif %}</p>
-<p class="muted">SAM 3.1 found {{ concept.masks|length }} candidate{{ "s" if concept.masks|length != 1 else "" }} for &quot;{{ concept.used_concept or concept.concept }}&quot;; scores are SAM&#39;s own confidence, not a confirmed match.</p>
+{% set concept_name = concept.used_concept or concept.concept %}
+{% set scored = (concept.masks | selectattr('score', 'number') | list | length) > 0 %}
+<p><strong>{{ concept_name }}</strong>{% if concept.found %} <span class="badge ai">found</span>{% else %} <span class="muted">not found</span>{% endif %}</p>
+{% if scored %}
+<p class="muted">SAM 3.1 found {{ concept.masks|length }} candidate{{ "s" if concept.masks|length != 1 else "" }} for &quot;{{ concept_name }}&quot;; scores are SAM&#39;s own confidence, not a confirmed match.</p>
+{% else %}
+<p class="muted">SAM 3.1 found {{ concept.masks|length }} candidate{{ "s" if concept.masks|length != 1 else "" }} for &quot;{{ concept_name }}&quot;; this recording has no per-candidate confidence, so none is marked as the match.</p>
+{% endif %}
 {% if concept.masks %}
 <table>
 <tr><th>Candidate</th><th>Confidence</th></tr>
 {% for m in concept.masks %}
-<tr><td class="muted">{{ m.object_id }}</td><td>{{ "%.2f"|format(m.score) if m.score is not none else "—" }}</td></tr>
+<tr><td class="muted">{% if scored %}{{ m.object_id }}{% else %}{{ concept_name }}? ({{ loop.index }}){% endif %}</td><td>{{ "%.2f"|format(m.score) if m.score is not none else "—" }}</td></tr>
 {% endfor %}
 </table>
 {% endif %}

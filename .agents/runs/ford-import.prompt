@@ -1,0 +1,18 @@
+Real-vehicle sessions are coming (owner: Ford baseline today, planted faults Saturday). Make them judge demos with one
+command, no hand editing:
+1. scripts/export_session_bundle.py <session_id> [--label "Ford F-150 2.7L, MAF unplugged"] [--out NAME.mmrec]: export a
+   finished backend session (live or upload mode) to a judge .mmrec: the hash-chained events.jsonl, the adapter
+   transcript the phone uploaded, every referenced blob (photos, clips, audio, PDFs), the report with its Wonder review,
+   and the cached model responses the session used, so replay is $0 and byte-identical. Full VIN never leaves vin.py
+   (truncated only). Refuse if any referenced blob or cached response is missing, naming it. Label "real vehicle, real
+   AI outputs" in meta.json.
+2. The judge landing lists every bundle in the fixtures dir: real-vehicle bundles first with their label, simulated ones
+   after, clearly marked. The primary "Play the investigation" button prefers a real bundle when one exists.
+   modal_app seeding already copies new/changed bundles.
+3. scripts/import_phone_recording.sh: adb pull of the phone's .mmrec recordings (Recorder.kt output path) into a staging
+   dir, verify each (mmrec verify + replay_check), and print the matching export command.
+4. Tests: export of a session built by the existing demo generator round-trips (export -> replay -> identical state and
+   report), missing-blob refusal, VIN truncation, landing ordering.
+Never print secret values. Keep the backend suite under 3 minutes. Run backend suite, ci_parity.sh, make_demo_bundle.py
+--check, replay_check, web build, acceptance_sweep.sh. Add a short "Turning a real session into a judge demo" section to
+docs/JUDGES.md (owner-facing) and a DECISIONS entry. Do not commit. Foreground only.

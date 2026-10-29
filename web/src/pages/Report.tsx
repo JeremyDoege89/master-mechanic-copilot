@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { API_BASE, apiGet, type Level } from "../api";
 import { formatReportExpected, formatReportMeasured, rawText, testTitle } from "../labels";
+import { hasScores, samCandidateLabel, samCaption } from "../samLabels";
 
 interface Props {
   reportId?: string;
@@ -319,6 +320,7 @@ export default function Report({ reportId }: Props) {
                     const ordered = [...(c.masks ?? [])].sort(
                       (a, b) => (b.score ?? 0) - (a.score ?? 0),
                     );
+                    const scored = hasScores(ordered);
                     return (
                       <div key={i}>
                         <p>
@@ -326,10 +328,7 @@ export default function Report({ reportId }: Props) {
                           {c.found ? <span className="badge ai">found</span> : <span>not found</span>}
                         </p>
                         <p>
-                          <small>
-                            SAM 3.1 found {ordered.length} candidate{ordered.length === 1 ? "" : "s"} for
-                            &quot;{concept}&quot;; scores are SAM&apos;s own confidence, not a confirmed match.
-                          </small>
+                          <small>{samCaption([concept], ordered.length, scored)}</small>
                         </p>
                         {ordered.length > 0 ? (
                           <table>
@@ -342,7 +341,13 @@ export default function Report({ reportId }: Props) {
                             <tbody>
                               {ordered.map((m, j) => (
                                 <tr key={j}>
-                                  <td><small className="t-raw">{m.object_id}</small></td>
+                                  <td>
+                                    {scored ? (
+                                      <small className="t-raw">{m.object_id}</small>
+                                    ) : (
+                                      samCandidateLabel(concept, m.score, j + 1)
+                                    )}
+                                  </td>
                                   <td>{typeof m.score === "number" ? m.score.toFixed(2) : "—"}</td>
                                 </tr>
                               ))}

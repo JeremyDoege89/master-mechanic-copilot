@@ -1,0 +1,13 @@
+Small polish batch (web + report rendering + bundle tooling):
+1. SAM overlay labels read "battery? —" because the recorded SAM stream carries no per-mask score. When scores are
+   absent, label candidates "battery? (1)", "(2)", "(3)" and change the caption to: SAM 3.1 found 3 candidates for
+   "battery"; this recording has no per-candidate confidence, so none is marked as the match. Keep the score wording
+   when scores exist. Web SamOverlay/Replay/Report and report.html.j2; test it.
+2. During judge replay the browser logs one HTTP 404 (not on page load; somewhere during Play or the report jump).
+   Find it with FastAPI TestClient driving the judge sequence the web app performs (no long-running server; if you
+   really need uvicorn, run it inside a single foreground command like `timeout 60 bash -c 'uvicorn ... & sleep 5; curl ...'`),
+   and by reading the web code paths for requests that can precede the resource existing (report before
+   report_built, blob before evidence, etc.) and fix it so a clean judge run has zero 4xx responses. Add a test.
+3. scripts/screenshot_site.sh: also print every >= 400 response it sees when playwright-core is available.
+Run backend suite, ci_parity.sh, make_demo_bundle.py --check, web build, acceptance_sweep.sh. Do not commit. Foreground
+only. Never print secret values.
