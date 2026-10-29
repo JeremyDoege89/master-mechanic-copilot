@@ -35,6 +35,18 @@ LLM_CACHE_PREFIX = "llm_cache/"
 REAL_LABEL = "real vehicle, real AI outputs"
 SIM_LABEL = "simulated vehicle, real AI outputs"
 
+# Bundle roles (meta.json "role"): judge-landing demos vs CI-only fixtures.
+# "demo" = generated/exported investigations the landing may play;
+# "ci" = test-only fixtures (e.g. sim-healthy.mmrec). Missing/unknown
+# roles default to "ci" so a new test fixture can never hijack the
+# judge landing by accident.
+ROLE_DEMO = "demo"
+ROLE_CI = "ci"
+
+# Fixed landing order for the simulated demos (after any real-vehicle
+# bundles): the vacuum-leak investigation is the default first play.
+DEMO_SIM_ORDER = ("sim-vacuum-leak.mmrec", "sim-coil-unplugged.mmrec")
+
 
 class MmrecError(ValueError):
     """Raised when a bundle is missing members or fails hash verification."""
@@ -58,6 +70,20 @@ def bundle_origin(meta: dict) -> str:
     except Exception:
         pass
     return "sim"
+
+
+def bundle_role(meta: dict) -> str:
+    """Judge-landing role for one bundle meta: ``"demo"`` or ``"ci"``.
+
+    Only an explicit ``role == "demo"`` opts a bundle into the landing;
+    missing or unknown roles default to ``"ci"``.
+    """
+    try:
+        if str(meta.get("role", "")).lower() == ROLE_DEMO:
+            return ROLE_DEMO
+    except Exception:
+        pass
+    return ROLE_CI
 
 
 def bundle_display_label(meta: dict, fallback_name: str = "") -> str:

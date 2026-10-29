@@ -29,6 +29,14 @@ def test_all_session_bundles_verify():
                 assert manifest["files"][e] == e.split("/")[-1], (bundle, e)
 
 
+def test_bundle_role_defaults_to_ci():
+    """Only an explicit role=demo opts a bundle into the judge landing."""
+    assert mmrec.bundle_role({"role": "demo"}) == mmrec.ROLE_DEMO
+    assert mmrec.bundle_role({}) == mmrec.ROLE_CI
+    assert mmrec.bundle_role({"role": "ci"}) == mmrec.ROLE_CI
+    assert mmrec.bundle_role({"role": "whatever"}) == mmrec.ROLE_CI
+
+
 def test_sim_healthy_bundle_shape():
     rows = mmrec.transcript_rows(str(SESSIONS / "sim-healthy.mmrec"))
     assert len(rows) >= 6

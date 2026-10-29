@@ -115,6 +115,22 @@ def test_judge_api_sequence_has_zero_4xx(client):
     assert len(seen) > 20
 
 
+def test_judge_default_bundle_is_a_full_investigation(tmp_path, monkeypatch):
+    """The landing auto-plays the first /fixtures entry: it must be a full
+    investigation (>= 15 events ending in a report), never a CI stub like
+    the 1-event sim-healthy.mmrec that hijacked the landing."""
+    from mmc.replay import mmrec, runner
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    fixtures = runner.list_fixtures()
+    assert fixtures, "judge landing has nothing to play"
+    assert all(f["name"] != "sim-healthy.mmrec" for f in fixtures)
+    default = fixtures[0]
+    rows = mmrec.event_rows(mmrec.loads(runner.fixture_bytes(default["name"])))
+    assert len(rows) >= 15, (default["name"], len(rows))
+    assert any(r.get("type") == "report_built" for r in rows), default["name"]
+
+
 def _is_valid_ico(data: bytes) -> bool:
     """ICONDIR with type 1 and at least one directory entry."""
     if len(data) < 6 or data[:4] != b"\x00\x00\x01\x00":

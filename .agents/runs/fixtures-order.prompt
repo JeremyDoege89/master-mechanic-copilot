@@ -1,0 +1,11 @@
+Regression on the live judge site after the export-tooling commit (2b9ecb2): "Play the investigation" now plays the
+first entry of /fixtures, which is sim-healthy.mmrec (a 1-event CI fixture), so judges land on an empty session
+(screenshot: /tmp/claude-1000/-home-dreamz/0981d56a-9682-5ac3-a915-3f62ea568397/scratchpad/u-end.png).
+Fix: bundles carry an explicit role in meta.json ("demo" for the generated and exported investigations, "ci" for
+sim-healthy and any test-only fixture). /fixtures returns only role=demo bundles; order real-vehicle first, then the
+simulated demos in a fixed order (sim-vacuum-leak, sim-coil-unplugged); bundles without meta role default to "ci".
+Regenerate the demo bundles offline if their meta changes (make_demo_bundle.py; live outputs untouched) and keep
+--check green; export_session_bundle.py writes role "demo". Tests: /fixtures excludes sim-healthy; the landing's
+default fixture is sim-vacuum-leak when no real bundle exists and the real one when it does; a judge-run test asserts
+the default bundle has >= 15 events and a report_built event. Run backend suite, ci_parity.sh, make_demo_bundle.py
+--check, replay_check, web build, acceptance_sweep.sh. Do not commit. Foreground only. Never print secret values.

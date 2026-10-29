@@ -938,6 +938,7 @@ def build_bundle(
             )
             vehicle = dict(session.meta.get("vehicle") or {})
             meta = {
+                "role": "demo",
                 "scenario": sim,
                 "personality": "genuine",
                 "label": "simulated vehicle, real AI outputs",

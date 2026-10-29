@@ -250,6 +250,7 @@ def main(argv: list[str] | None = None) -> int:
 
     display_label = str(args.label).strip() or f"Real vehicle session {session_id[:8]}"
     meta = {
+        "role": "demo",
         "origin": "real",
         "label": mmrec.REAL_LABEL,
         "display_label": display_label,

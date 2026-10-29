@@ -232,7 +232,7 @@ async def post_replay(body: ReplayBody):
 
 @router.get("/fixtures")
 async def list_fixtures():
-    """Judge-landing inventory: every fixture bundle, real-vehicle first.
+    """Judge-landing inventory: role=demo bundles only, real-vehicle first.
 
     Real-vehicle exports (``label == "real vehicle, real AI outputs"``)
     sort before simulated bundles; each entry carries its display label

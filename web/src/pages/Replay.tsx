@@ -23,6 +23,11 @@ interface Props {
 const JUDGE_FIXTURE = "sim-vacuum-leak.mmrec";
 const COIL_FIXTURE = "sim-coil-unplugged.mmrec";
 
+// Fixed landing order for the simulated demos (after any real-vehicle
+// bundles): the vacuum-leak investigation is the default first play.
+// Mirrors DEMO_SIM_ORDER in backend/mmc/replay/mmrec.py.
+const SIM_ORDER = [JUDGE_FIXTURE, COIL_FIXTURE];
+
 interface FixtureEntry {
   name: string;
   origin: string;
@@ -36,6 +41,13 @@ function orderedFixtures(list: FixtureEntry[]): FixtureEntry[] {
     const ao = a.origin === "real" ? 0 : 1;
     const bo = b.origin === "real" ? 0 : 1;
     if (ao !== bo) return ao - bo;
+    if (ao === 1) {
+      const ar = SIM_ORDER.indexOf(a.name);
+      const br = SIM_ORDER.indexOf(b.name);
+      const an = ar === -1 ? SIM_ORDER.length : ar;
+      const bn = br === -1 ? SIM_ORDER.length : br;
+      if (an !== bn) return an - bn;
+    }
     const al = (a.display_label || a.name).toLowerCase();
     const bl = (b.display_label || b.name).toLowerCase();
     if (al !== bl) return al < bl ? -1 : 1;

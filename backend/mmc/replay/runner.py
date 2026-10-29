@@ -261,11 +261,14 @@ def _fixture_search_dirs() -> list:
 
 
 def list_fixtures() -> list[dict]:
-    """Judge-landing inventory: every bundle, real-vehicle first.
+    """Judge-landing inventory: demo bundles only, real-vehicle first.
 
     Merges the seeded ``DATA_DIR/fixtures/sessions`` dir with the repo
     copy (seeded wins on name clash; Modal seeds new/changed bundles on
-    boot so real-vehicle drops appear with no code change). Each entry
+    boot so real-vehicle drops appear with no code change). Only bundles
+    with ``role == "demo"`` in ``meta.json`` are listed — CI fixtures
+    (``sim-healthy.mmrec`` and any role-less bundle) stay replayable by
+    name via ``POST /replay`` but never reach the landing. Each entry
     carries ``name``, ``origin`` (``"real"`` sorts first), ``label`` and
     ``display_label`` from ``meta.json``. Unreadable bundles are skipped,
     never fatal to the landing.
@@ -289,6 +292,8 @@ def list_fixtures() -> list[dict]:
                     meta = {}
             except Exception:
                 meta = {}
+            if mmrec.bundle_role(meta) != mmrec.ROLE_DEMO:
+                continue
             origin = mmrec.bundle_origin(meta)
             if origin != "real" and name.startswith("real-"):
                 origin = "real"
@@ -299,8 +304,14 @@ def list_fixtures() -> list[dict]:
                 "display_label": mmrec.bundle_display_label(meta, name),
                 "scenario": str(meta.get("scenario", "")),
             }
-    fixtures = sorted(
-        seen.values(),
-        key=lambda e: (0 if e["origin"] == "real" else 1, e["display_label"].lower(), e["name"]),
-    )
-    return fixtures
+
+    def _order(entry: dict) -> tuple:
+        if entry["origin"] == "real":
+            return (0, entry["display_label"].lower(), entry["name"])
+        try:
+            sim_rank = mmrec.DEMO_SIM_ORDER.index(entry["name"])
+        except ValueError:
+            sim_rank = len(mmrec.DEMO_SIM_ORDER)
+        return (1, sim_rank, entry["display_label"].lower(), entry["name"])
+
+    return sorted(seen.values(), key=_order)

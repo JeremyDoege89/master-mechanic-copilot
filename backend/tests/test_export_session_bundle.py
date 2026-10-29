@@ -144,6 +144,7 @@ def test_export_round_trips_state_and_report(client, tmp_path, monkeypatch):
     mmrec.verify_members(members, str(out))
     meta = json.loads(members["meta.json"].decode("utf-8"))
     assert meta["label"] == mmrec.REAL_LABEL
+    assert meta["role"] == mmrec.ROLE_DEMO
     assert meta["display_label"] == LABEL
     assert meta["vehicle"].get("vin_last6") == LAST6
     assert "vin_encrypted" not in (meta.get("vehicle") or {})
@@ -256,18 +257,46 @@ def test_fixture_listing_orders_real_first(client, tmp_path, monkeypatch):
 
     dest = tmp_path / "fixtures" / "sessions"
     dest.mkdir(parents=True)
-    sim_meta = {"label": mmrec.SIM_LABEL, "display_label": "Z sim demo", "scenario": "vacuum_leak"}
-    real_meta = {"label": mmrec.REAL_LABEL, "display_label": LABEL, "origin": "real", "scenario": "real-vehicle"}
+    sim_meta = {"role": "demo", "label": mmrec.SIM_LABEL, "display_label": "Z sim demo", "scenario": "vacuum_leak"}
+    ci_meta = {"role": "ci", "scenario": "healthy"}
+    roleless_meta = {"scenario": "healthy"}
+    real_meta = {"role": "demo", "label": mmrec.REAL_LABEL, "display_label": LABEL, "origin": "real", "scenario": "real-vehicle"}
     (dest / "sim-a.mmrec").write_bytes(mmrec.create({"events.jsonl": b""}, sim_meta))
+    (dest / "sim-healthy.mmrec").write_bytes(mmrec.create({"events.jsonl": b""}, ci_meta))
+    (dest / "legacy.mmrec").write_bytes(mmrec.create({"events.jsonl": b""}, roleless_meta))
     (dest / "real-x.mmrec").write_bytes(mmrec.create({"events.jsonl": b""}, real_meta))
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     listed = runner.list_fixtures()
-    names = [e["name"] for e in listed if e["name"] in ("sim-a.mmrec", "real-x.mmrec")]
-    assert names and names[0] == "real-x.mmrec", names
+    names = [e["name"] for e in listed]
+    # CI fixtures (and role-less legacy bundles, which default to ci) never
+    # reach the judge landing — the sim-healthy regression.
+    assert "sim-healthy.mmrec" not in names, names
+    assert "legacy.mmrec" not in names, names
+    seeded_names = [n for n in names if n in ("sim-a.mmrec", "real-x.mmrec")]
+    assert seeded_names and seeded_names[0] == "real-x.mmrec", names
     assert listed[0]["origin"] == "real"
     assert listed[0]["display_label"] == LABEL
 
     r = client.get("/fixtures")
     assert r.status_code == 200, r.text
-    api_names = [e["name"] for e in r.json()["fixtures"] if e["name"] in ("sim-a.mmrec", "real-x.mmrec")]
-    assert api_names and api_names[0] == "real-x.mmrec", api_names
+    api_names = [e["name"] for e in r.json()["fixtures"]]
+    assert "sim-healthy.mmrec" not in api_names, api_names
+    assert "legacy.mmrec" not in api_names, api_names
+    api_seeded = [n for n in api_names if n in ("sim-a.mmrec", "real-x.mmrec")]
+    assert api_seeded and api_seeded[0] == "real-x.mmrec", api_names
+
+
+def test_fixture_default_is_vacuum_leak_until_real_bundle_exists(tmp_path, monkeypatch):
+    """The landing auto-plays the first /fixtures entry: sim-vacuum-leak
+    with no real bundle, the real bundle once the owner exports one."""
+    from mmc.replay import mmrec, runner
+
+    dest = tmp_path / "fixtures" / "sessions"
+    dest.mkdir(parents=True)
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    first = runner.list_fixtures()[0]["name"]
+    assert first == "sim-vacuum-leak.mmrec", first
+    real_meta = {"role": "demo", "label": mmrec.REAL_LABEL, "display_label": LABEL, "origin": "real", "scenario": "real-vehicle"}
+    (dest / "real-ford.mmrec").write_bytes(mmrec.create({"events.jsonl": b""}, real_meta))
+    first = runner.list_fixtures()[0]["name"]
+    assert first == "real-ford.mmrec", first
