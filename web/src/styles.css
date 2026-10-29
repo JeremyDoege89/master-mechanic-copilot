@@ -409,6 +409,26 @@ th, td {
 
 th { background: var(--surface); }
 
+/* Report tables fit the page: fixed layout plus wrapping, never overflow */
+.report table {
+  table-layout: fixed;
+  width: 100%;
+  max-width: 100%;
+}
+.report th, .report td {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.report details.raw { margin-top: 4px; font-size: 0.85em; }
+.report details.raw summary { cursor: pointer; color: var(--muted); }
+.report details.raw code {
+  display: block;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+  max-width: 100%;
+}
+
 /* Controls */
 button, select, input[type="text"], input:not([type]) {
   font: inherit;

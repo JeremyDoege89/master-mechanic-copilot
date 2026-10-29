@@ -1,0 +1,15 @@
+Two bugs from the live site (screenshots: /tmp/mmc-shots/u-mid.png and u-report.png):
+1. SAM overlay scaling: on the engine-bay photo (1280x960) the BOXES land correctly (battery bottom-left, fuse box,
+   air filter) but the MASK paths are drawn at half size in the top-left corner. The SAM call is sent a 640 px
+   downscale (sam_scale in the call record); boxes are scaled back to original coordinates, mask SVG paths/RLE are not.
+   Scale masks back the same way at the source (backend, where boxes are rescaled) so every consumer gets original-
+   coordinate masks; regenerate the demo bundles offline (make_demo_bundle.py, re-key the demo cache offline if needed,
+   live outputs untouched) and add a test that every mask's bounding box lies inside its object's box (+ small margin).
+2. Human-facing formatting in the report (web Report.tsx AND report.html.j2): the trace "Measured" column shows Python
+   dict reprs ("{'dtcs': []}", "{'cruise_trim_pct': 4.244416662221763, 'idle_trim_pct': 18.0}") and the Expected vs
+   measured table shows raw JSON. Render per test kind: "No codes stored", "Idle +18.0%, 2,500 rpm +4.2%", "14.75 V with
+   engine running", "Book range 13.50-14.80 V (manual p.1)", "Hissing (vacuum hiss)". Keep the raw value available in a
+   collapsed "raw" detail for the Tech level. The table must fit the page width (wrap, no horizontal overflow), and print.
+   The reproducible report JSON stays byte-exact; only rendering changes.
+Run the backend suite (< 3 min), make_demo_bundle.py --check, replay_check and the web build until green. Do not commit.
+Foreground only. Finish with files changed and test counts.

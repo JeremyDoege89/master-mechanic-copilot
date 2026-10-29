@@ -6,6 +6,8 @@ from pathlib import Path
 
 import jinja2
 
+from mmc.report.format import format_expected, format_measured
+
 TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
 
 
@@ -17,6 +19,15 @@ def _environment() -> jinja2.Environment:
 
 
 def render_html(report: dict) -> str:
-    """Render ``report`` to an HTML string (all values escaped)."""
+    """Render ``report`` to an HTML string (all values escaped).
+
+    Human-readable expected/measured strings come from
+    :mod:`mmc.report.format` as template globals — the report dict itself
+    is never modified, so the reproducible JSON stays byte-exact.
+    """
     template = _environment().get_template("report.html.j2")
-    return template.render(report=report)
+    return template.render(
+        report=report,
+        human_measured=format_measured,
+        human_expected=format_expected,
+    )

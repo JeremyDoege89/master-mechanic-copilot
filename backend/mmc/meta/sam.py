@@ -32,8 +32,12 @@ time with one pure-Python raster decode per mask (~1.4 s each on the live
 75-frame clip), so :func:`result_from_image` must add exactly ONE more
 raster decode per mask — the RLE build — and derive the SVG path from that
 RLE. Media sent to SAM is first downscaled to at most 640 px on the long
-side (:data:`SAM_MAX_SIDE`); boxes/paths are scaled back to the source
+side (:data:`SAM_MAX_SIDE`); boxes are scaled back to the source
 coordinates for overlays and the scale is recorded in the call record.
+Mask rasters are box-crop-relative, so mask SVG paths are scaled back AND
+shifted by the scaled box origin (RLE sizes are scaled; their origin stays
+the box origin) — without the shift every mask draws in the top-left
+corner.
 
 An empty result (``status: completed`` with empty text, as in
 ``sam_stream_air_filter_housing.jsonl``) is a NORMAL "not found" outcome,
@@ -272,6 +276,9 @@ def rle_and_svg(mask: SegmentationMask) -> tuple[RLEObject, str]:
 
 _NUMBER_RE = re.compile(r"-?\d+(?:\.\d+)?")
 
+#: M/L coordinate pairs as emitted by the RLE->SVG step (``Mx yLx y...Z``).
+_PAIR_RE = re.compile(r"([ML])(-?\d+(?:\.\d+)?) (-?\d+(?:\.\d+)?)")
+
 
 def scale_svg_path(path: str, factor: float) -> str:
     """Scale every coordinate in an SVG path string by ``factor``."""
@@ -283,6 +290,63 @@ def scale_svg_path(path: str, factor: float) -> str:
         return str(int(value)) if value.is_integer() else repr(value)
 
     return _NUMBER_RE.sub(_scaled, path)
+
+
+def offset_svg_path(path: str, dx: float, dy: float) -> str:
+    """Shift an SVG path by ``(dx, dy)`` (x-coords by ``dx``, y by ``dy``).
+
+    SAM emits mask rasters in box-crop space, so the RLE->SVG path is
+    crop-relative too: after :func:`scale_svg_path` it must be shifted by
+    the (scaled) box origin to land in image coordinates. Only ``M``/``L``
+    pairs (the whole grammar the converter emits) are shifted; anything
+    else passes through untouched.
+    """
+    if not path or (dx == 0 and dy == 0):
+        return path
+
+    def _shifted(match: re.Match[str]) -> str:
+        x = float(match.group(2)) + dx
+        y = float(match.group(3)) + dy
+        fmt = lambda v: str(int(v)) if v.is_integer() else repr(v)
+        return f"{match.group(1)}{fmt(x)} {fmt(y)}"
+
+    return _PAIR_RE.sub(_shifted, path)
+
+
+def scale_rle(rle_obj: Any, factor: float) -> Any:
+    """Nearest-neighbour scale of a crop-space RLE mask by ``factor``.
+
+    RLE-level only (bitmap decode/re-encode, no raster-codec call), so the
+    single-decode budget in :func:`result_from_image` is unaffected. The
+    RLE stays box-crop-relative — its origin is the mask's box origin —
+    but its ``size`` comes back in original-coordinate pixels, matching
+    the scaled SVG path. ``factor == 1.0`` returns the object unchanged.
+    """
+    if factor == 1.0:
+        return rle_obj
+    from meta_sam_parser._mask_conversion import (
+        _DataArray,
+        _decode as _rle_to_bitmap,
+        _encode as _bitmap_to_rle,
+    )
+
+    height, width = int(rle_obj.size[0]), int(rle_obj.size[1])
+    new_h = max(1, int(round(height * factor)))
+    new_w = max(1, int(round(width * factor)))
+    if (new_h, new_w) == (height, width):
+        return rle_obj
+    src = _rle_to_bitmap(rle_obj).data  # column-major bytes, crop space
+    dst = bytearray(new_h * new_w)
+    for col in range(new_w):
+        src_col = min(width - 1, int(col / factor))
+        base_src = src_col * height
+        base_dst = col * new_h
+        for row in range(new_h):
+            dst[base_dst + row] = src[base_src + min(height - 1, int(row / factor))]
+    encoded = _bitmap_to_rle(_DataArray(bytes(dst), (new_h, new_w)))
+    if isinstance(encoded, list):
+        raise RuntimeError("RLE scaling returned multiple masks for one mask.")
+    return encoded
 
 
 def _scaled_box(box: SamBox | None, factor: float) -> SamBox | None:
@@ -328,7 +392,12 @@ def result_from_image(
     ``mask_stride``-th frame and at most ``max_mask_frames`` frames — what
     the UI shows. Image results (no frame index) convert every mask.
     ``coord_scale`` maps result coordinates back (e.g. 1/sam_scale after a
-    pre-SAM downscale).
+    pre-SAM downscale). Boxes scale; mask SVG paths scale AND shift by the
+    scaled box origin, because SAM mask rasters are box-crop-relative while
+    boxes are image-relative — without the shift every mask draws in the
+    top-left corner. The stored RLE is scaled the same way (its origin
+    stays the box origin); only the overlay SVG path carries full image
+    coordinates.
     """
     result = SamResult(
         concept=concept,
@@ -364,11 +433,31 @@ def result_from_image(
         box_rec = boxes.get((frame_index, record.object_id))
         box = _record_box(box_rec) if box_rec is not None else None
         rle_obj, svg_path = rle_and_svg(record.mask)
+        # Mask raster is box-crop-relative: its image-space origin is the
+        # box origin (the parser's per-mask bounds; the looked-up box as
+        # fallback), scaled back exactly like the box itself.
+        bounds = getattr(record, "bounds", None)
+        if bounds is not None:
+            origin = (int(bounds.left), int(bounds.top))
+        elif box is not None:
+            origin = (box.x_min, box.y_min)
+        else:
+            origin = (0, 0)
+        scaled_origin = (
+            int(round(origin[0] * coord_scale)),
+            int(round(origin[1] * coord_scale)),
+        )
+        rle_obj = scale_rle(rle_obj, coord_scale)
+        svg_path = offset_svg_path(
+            scale_svg_path(svg_path, coord_scale),
+            scaled_origin[0],
+            scaled_origin[1],
+        )
         result.masks.append(
             SamMask(
                 object_id=record.object_id,
                 box=_scaled_box(box, coord_scale),
-                svg_path=scale_svg_path(svg_path, coord_scale),
+                svg_path=svg_path,
                 rle={"size": list(rle_obj.size), "counts": rle_obj.counts},
                 score=record.confidence,
                 frame_index=frame_index,

@@ -8,6 +8,7 @@ video-segmentation response with <=3 objects.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -175,6 +176,50 @@ def test_replay_battery_stream_finds_three_objects():
         assert m.rle["counts"]
     overlays = sam_mod.overlays_for_result(res)
     assert len(overlays) == 3 and all(o["box"] is not None for o in overlays)
+
+
+MASK_IN_BOX_MARGIN_PX = 3
+
+#: M/L coordinate pairs of the RLE->SVG grammar (``Mx yLx y...Z``).
+_SVG_PAIR_RE = re.compile(r"[ML](-?\d+(?:\.\d+)?) (-?\d+(?:\.\d+)?)")
+
+
+def _svg_bbox(path: str) -> tuple[float, float, float, float]:
+    xs = [float(x) for x, _y in _SVG_PAIR_RE.findall(path)]
+    ys = [float(y) for _x, y in _SVG_PAIR_RE.findall(path)]
+    assert xs and ys, "mask SVG path carries no coordinates"
+    return (min(xs), min(ys), max(xs), max(ys))
+
+
+@pytest.mark.parametrize("coord_scale", [1.0, 2.0])
+def test_sam_masks_land_inside_their_boxes(coord_scale):
+    """Regression (live-site overlay bug): SAM mask rasters are
+    box-crop-relative while boxes are image-relative, so overlay SVG paths
+    must be scaled back AND shifted by the box origin. Unshifted masks draw
+    at half size in the top-left corner while the boxes land correctly."""
+    events = load_stream_fixture(VISION_FIXTURES / "sam_stream_battery.jsonl")
+    seg = parse_image_events(events)
+    res = result_from_image("battery", seg, coord_scale=coord_scale)
+    assert len(res.masks) == 3
+    for m in res.masks:
+        assert m.box is not None and m.svg_path.startswith("M")
+        minx, miny, maxx, maxy = _svg_bbox(m.svg_path)
+        assert minx >= m.box.x_min - MASK_IN_BOX_MARGIN_PX
+        assert miny >= m.box.y_min - MASK_IN_BOX_MARGIN_PX
+        assert maxx <= m.box.x_max + MASK_IN_BOX_MARGIN_PX
+        assert maxy <= m.box.y_max + MASK_IN_BOX_MARGIN_PX
+
+
+def test_sam_rle_sizes_scale_back_with_boxes():
+    """The stored RLE size scales with ``coord_scale`` (origin stays the
+    box origin); the overlay SVG path carries full image coordinates."""
+    events = load_stream_fixture(VISION_FIXTURES / "sam_stream_battery.jsonl")
+    seg = parse_image_events(events)
+    base = {m.object_id: m for m in result_from_image("battery", seg).masks}
+    scaled = {m.object_id: m for m in result_from_image("battery", seg, coord_scale=2.0).masks}
+    assert set(scaled) == set(base)
+    for oid, m in scaled.items():
+        assert m.rle["size"] == [d * 2 for d in base[oid].rle["size"]]
 
 
 def test_replay_empty_stream_is_not_found_not_error():

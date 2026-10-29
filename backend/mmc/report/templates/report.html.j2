@@ -24,9 +24,12 @@ h1 { font-size: 1.3rem; margin: 0; }
 h2 { font-size: 1.1rem; margin: 1.75rem 0 0.5rem; }
 h3 { font-size: 1rem; margin: 1.25rem 0 0.5rem; }
 .conclusion { border: 2px solid var(--ok); border-radius: 10px; padding: 1rem 1.25rem; background: var(--card); font-size: 1.1rem; }
-table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: 0.92em; }
-th, td { border: 1px solid var(--line); padding: 0.45rem 0.6rem; text-align: left; vertical-align: top; }
+table { border-collapse: collapse; width: 100%; max-width: 100%; margin: 1rem 0; font-size: 0.92em; table-layout: fixed; }
+th, td { border: 1px solid var(--line); padding: 0.45rem 0.6rem; text-align: left; vertical-align: top; overflow-wrap: anywhere; word-break: break-word; }
 th { background: var(--surface); }
+details.raw { margin-top: 0.3rem; font-size: 0.85em; }
+details.raw summary { cursor: pointer; color: var(--muted); }
+details.raw code { display: block; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-all; max-width: 100%; }
 .badge { display: inline-block; border: 1px solid var(--muted); border-radius: 999px; padding: 0 0.5rem; font-size: 0.85em; white-space: nowrap; }
 .ai { border-color: var(--accent); color: var(--accent); }
 .dsp { border-color: var(--ok); color: var(--ok); }
@@ -38,9 +41,11 @@ pre { white-space: pre-wrap; word-break: break-word; background: var(--card); bo
 .muted { color: var(--muted); }
 @media print {
   :root { --bg: #ffffff; --surface: #ffffff; --card: #ffffff; --ink: #000000; --muted: #333333; --line: #666666; --accent: #000000; --ok: #000000; --warn: #000000; --bad: #000000; }
-  body { margin: 0; }
+  body { margin: 0; max-width: none; }
+  table { table-layout: fixed; width: 100%; }
   tr, .conclusion { break-inside: avoid; }
   .badge { border: 1px solid #000; color: #000; background: none; }
+  details.raw summary { color: #000; }
 }
 @media (max-width: 640px) { body { padding: 1rem 0.75rem 2rem; } table { font-size: 0.85em; } }
 </style>
@@ -70,9 +75,10 @@ pre { white-space: pre-wrap; word-break: break-word; background: var(--card); bo
 <h3>{{ h.label.L1 }} ({{ h.hypothesis_id }}) — {{ h.trace|length }} updates</h3>
 {% if h.trace %}
 <table>
+<colgroup><col style="width:4%"><col style="width:16%"><col style="width:14%"><col style="width:16%"><col style="width:6%"><col style="width:10%"><col style="width:34%"></colgroup>
 <tr><th>#</th><th>Test</th><th>Expected</th><th>Measured</th><th>LR</th><th>Source</th><th>What it means</th></tr>
 {% for t in h.trace %}
-<tr><td>{{ t.seq }}</td><td>{{ t.test_id }}</td><td>{{ t.expected }}</td><td>{{ t.measured }}</td><td>×{{ t.likelihood_ratio }}</td><td><span class="badge">{{ t.lr_source }}</span></td><td>{{ t.text_L1 }}</td></tr>
+<tr><td>{{ t.seq }}</td><td>{{ t.test_id }}</td><td>{{ human_expected(t.expected) }}</td><td>{{ human_measured(t.test_id, t.measured) }}<details class="raw"><summary>raw</summary><code>{{ t.measured }}</code></details></td><td>×{{ t.likelihood_ratio }}</td><td><span class="badge">{{ t.lr_source }}</span></td><td>{{ t.text_L1 }}</td></tr>
 {% endfor %}
 </table>
 {% else %}
@@ -82,12 +88,13 @@ pre { white-space: pre-wrap; word-break: break-word; background: var(--card); bo
 
 <h2>Expected vs measured</h2>
 <table>
+<colgroup><col style="width:15%"><col style="width:23%"><col style="width:23%"><col style="width:11%"><col style="width:12%"><col style="width:16%"></colgroup>
 <tr><th>Test</th><th>Expected</th><th>Measured</th><th>Outcome</th><th>Evaluator</th><th>How judged</th></tr>
 {% for row in report.expected_vs_measured %}
 <tr>
 <td>{{ row.test_ref }}</td>
-<td>{{ row.expected }}</td>
-<td>{{ row.measured }}</td>
+<td>{{ human_expected(row.expected) }}<details class="raw"><summary>raw</summary><code>{{ row.expected | tojson }}</code></details></td>
+<td>{{ human_measured(row.test_ref, row.measured) }}<details class="raw"><summary>raw</summary><code>{{ row.measured | tojson }}</code></details></td>
 <td>{{ row.outcome }}</td>
 <td>{{ row.evaluator }}</td>
 <td>{% if row.origin == "signal_processing" %}<span class="badge dsp">DSP · signal, not AI</span>{% elif row.expected and row.expected.source and row.expected.source.kind == "manual_page" %}<span class="badge manual">manual</span>{% elif row.expected and row.expected.source and row.expected.source.kind == "kp" %}<span class="badge kp">knowledge pack</span>{% elif row.expected and row.expected.source and row.expected.source.kind == "physics" %}<span class="badge phys">physics</span>{% elif row.expected and row.expected.source and row.expected.source.kind == "mode06_limit" %}<span class="badge">on-board limits</span>{% elif row.origin == "direct_observation" %}Direct observation{% else %}Deterministic ({{ row.evaluator }}){% endif %}</td>

@@ -1,0 +1,23 @@
+Read AGENTS.md (M7, Voice and Meta client rules, API contracts), docs/SPEC.md (§3 hands-free flows, §4 model map incl.
+Voice Transcribe and the Spark Open row, §7), docs/PLAN.md (Days 5-7, owner tasks, demo assets), docs/JUDGES.md,
+docs/DECISIONS.md, README.md, and the current code (backend api/meta/levels/safety/report, android ui/session/audio,
+web). M0-M6 + M6B are done and live on Modal (replay-only judge site).
+
+Write .agents/plans/M7.md (under 150 lines), in order:
+1. Voice: backend WS /sessions/{id}/asr proxying Android PCM to the Meta realtime ASR (muse-voice-transcribe-1.0,
+   wss://api.meta.ai/v1/asr/realtime; key stays server-side; keyword biasing from KP component/test names), asr_segment
+   events, budget at $0.18/h, and a deterministic command grammar ("next test", "log 12.4 volts", "log idle trim plus
+   eighteen", "repeat", "read it again", "what's the risk", "level one/two/three") that maps to existing routes with
+   confirmation before anything becomes evidence. Android push-to-talk + hands-free toggle, spoken replies with Android
+   TextToSpeech (no TTS from Meta). A spike script (owner-run, outside the sandbox) that verifies the realtime ASR
+   protocol and saves key-free fixtures; until then fixtures are provisional.
+2. Judge-mode polish: JUDGES.md final, landing copy, both demo bundles linked, a "How this was built" panel (Muse Code
+   built it; which Meta model does what), budget badge explains $0.
+3. README rewrite for judges: one-paragraph pitch, architecture diagram (Mermaid: Android -> backend -> Meta API /
+   Baseten; engine; event store; web), Meta model map table (Spark 1.3, SAM 3.1, Voice Transcribe, Wonder, Spark Open via
+   Baseten, Muse Code), how to run sim/replay locally, the public URL, safety statement (read-only OBD, allowlist,
+   gates), prior-experience statement (built during the event; prior domain experience, no prior code), licence.
+4. Signed release APK with simulator mode on a GitHub Release (keystore created by the owner outside the repo; build
+   script + docs only; never commit keys).
+5. Acceptance sweep: a script that runs every AGENTS.md acceptance check that can run offline and prints a table.
+Tests per item, expected spend, verification commands. Write only the plan file. End with a 5-line summary.

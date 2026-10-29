@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { API_BASE, apiGet, type Level } from "../api";
-import { testTitle } from "../labels";
+import { formatReportExpected, formatReportMeasured, rawText, testTitle } from "../labels";
 
 interface Props {
   reportId?: string;
@@ -62,9 +62,6 @@ interface Report {
     prompts_sha256: string;
   };
 }
-
-const fmt = (v: unknown): string =>
-  typeof v === "string" ? v : JSON.stringify(v);
 
 function sourceBadge(row: Report["expected_vs_measured"][number]): { cls: string; text: string } {
   if (row.origin === "signal_processing") {
@@ -221,8 +218,10 @@ export default function Report({ reportId }: Props) {
                         <tr key={i}>
                           <td>{t.seq}</td>
                           <td>{t.test_id ? testTitle(t.test_id) : "—"} <small className="t-raw">{t.test_id}</small></td>
-                          <td>{t.expected}</td>
-                          <td>{t.measured}</td>
+                          <td>{formatReportExpected(t.expected)}</td>
+                          <td>{formatReportMeasured(t.test_id, t.measured)}{level === "L3" ? (
+                            <details className="raw"><summary>raw</summary><code>{rawText(t.measured)}</code></details>
+                          ) : null}</td>
                           <td>×{t.likelihood_ratio.toFixed(2)}</td>
                           <td><span className="badge">{t.lr_source}</span></td>
                           <td>{level === "L1" ? t.text_L1 : level === "L2" ? t.text_L2 : t.text_L3}</td>
@@ -250,11 +249,16 @@ export default function Report({ reportId }: Props) {
               <tbody>
                 {report.expected_vs_measured.map((row, i) => {
                   const b = sourceBadge(row);
+                  const raw = level === "L3" ? (
+                    (v: unknown) => (
+                      <details className="raw"><summary>raw</summary><code>{rawText(v)}</code></details>
+                    )
+                  ) : (_v: unknown) => null;
                   return (
                     <tr key={i}>
                       <td><strong>{testTitle(row.test_ref)}</strong> <small className="t-raw">{row.test_ref}</small></td>
-                      <td>{fmt(row.expected)}</td>
-                      <td>{fmt(row.measured)}</td>
+                      <td>{formatReportExpected(row.expected)}{raw(row.expected)}</td>
+                      <td>{formatReportMeasured(row.test_ref, row.measured)}{raw(row.measured)}</td>
                       <td>{row.outcome}</td>
                       <td>
                         <span className={b.cls}>{b.text}</span>{" "}

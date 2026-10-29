@@ -280,3 +280,177 @@ function describeTestResult(ref: string, p: Record<string, unknown>): string {
 function cap(s: string): string {
   return s.length > 0 ? s[0].toUpperCase() + s.slice(1) : s;
 }
+
+/** Plain labels for known outcome slugs (mirrors backend report/format.py). */
+export const OUTCOME_LABELS: Record<string, string> = {
+  none: "No codes",
+  p030n: "Misfire code (P030n)",
+  misfire_cyl_n: "Misfire on one cylinder",
+  primes_normally: "Primes normally",
+  lean_idle_normal_cruise: "Lean at idle, normal at cruise",
+  lean_both: "Lean at idle and cruise",
+  normal: "Normal",
+  rich: "Rich",
+  vacuum_hiss: "Hissing",
+  misfire_dropout: "Misfire dropout",
+  belt_bearing_tone: "Belt or bearing tone",
+  inconclusive: "Inconclusive",
+  switching_ok: "Switching normally",
+  lazy_stuck: "Slow or stuck",
+  maf_ok: "Airflow reading plausible",
+  maf_dead: "No airflow signal",
+  maf_under: "Airflow reading low",
+  maf_over: "Airflow reading high",
+  iat_ok: "Intake-air temperature plausible",
+  iat_open: "Intake-air sensor circuit open",
+  warms_ok: "Warms up normally",
+  stuck_open: "Thermostat stuck open",
+  in_spec: "Within specification",
+  out_of_spec: "Out of specification",
+};
+
+export function outcomeLabel(slug: unknown): string {
+  const text = String(slug ?? "");
+  return OUTCOME_LABELS[text] ?? prettyRef(text);
+}
+
+function outcomeMeasured(slug: unknown): string {
+  const text = String(slug ?? "");
+  const pretty = text.replace(/_/g, " ");
+  const label = OUTCOME_LABELS[text] ?? pretty;
+  if (label.toLowerCase() === pretty.toLowerCase()) return label;
+  return `${label} (${pretty})`;
+}
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+/**
+ * Parse a trace-cell Python-repr string (e.g. `{'dtcs': []}`) back to a
+ * value. Plain slugs and unparseable text pass through as strings.
+ */
+export function parsePyRepr(raw: unknown): unknown {
+  if (typeof raw !== "string") return raw;
+  const t = raw.trim();
+  if (!(t.startsWith("{") || t.startsWith("["))) return raw;
+  const jsonish = t
+    .replace(/\bTrue\b/g, "true")
+    .replace(/\bFalse\b/g, "false")
+    .replace(/\bNone\b/g, "null")
+    .replace(/'/g, '"');
+  try {
+    return JSON.parse(jsonish) as unknown;
+  } catch {
+    return raw;
+  }
+}
+
+function unwrapMeasured(raw: unknown): unknown {
+  const v = parsePyRepr(raw);
+  if (isRecord(v) && Object.keys(v).length === 1 && "value" in v) {
+    return parsePyRepr(v.value);
+  }
+  return v;
+}
+
+function signedPct1(v: number): string {
+  const clean = Math.abs(v) < 0.05 ? 0 : v;
+  return `${clean > 0 ? "+" : ""}${clean.toFixed(1)}%`;
+}
+
+function shortScalar(v: unknown): string {
+  if (typeof v === "number" && Number.isFinite(v)) {
+    return String(Math.round(v * 1000) / 1000);
+  }
+  const text = String(v ?? "");
+  return text.length <= 60 ? text : `${text.slice(0, 57)}...`;
+}
+
+/** Raw cell content for the collapsed Tech-level detail. */
+export function rawText(raw: unknown): string {
+  return typeof raw === "string" ? raw : JSON.stringify(raw);
+}
+
+/** Human string for a measured payload (dict, repr string, or scalar). */
+export function formatReportMeasured(testRef: string | null, raw: unknown): string {
+  try {
+    const value = unwrapMeasured(raw);
+    if (isRecord(value)) {
+      if (Array.isArray(value.dtcs)) {
+        const dtcs = value.dtcs.map((d) => String(d));
+        return dtcs.length === 0 ? "No codes stored" : dtcs.join(", ");
+      }
+      if (num(value.idle_trim_pct) !== null && num(value.cruise_trim_pct) !== null) {
+        return `Idle ${signedPct1(value.idle_trim_pct as number)}, 2,500 rpm ${signedPct1(value.cruise_trim_pct as number)}`;
+      }
+      if (num(value.voltage_v) !== null) {
+        const text = `${(value.voltage_v as number).toFixed(2)} V`;
+        if (value.engine_on === true) return `${text} with engine running`;
+        if (value.engine_on === false) return `${text} with engine off`;
+        return text;
+      }
+      if (isRecord(value.misfire_counts)) {
+        const hits = Object.entries(value.misfire_counts)
+          .filter(([, n]) => num(n) !== null && (n as number) > 0)
+          .map(([cyl, n]) => `cyl ${cyl} = ${n as number}`)
+          .sort();
+        return hits.length === 0 ? "No misfires counted" : `Misfire counts: ${hits.join(", ")}`;
+      }
+      if (Array.isArray(value.o2_samples_v)) {
+        const samples = value.o2_samples_v.filter((s) => num(s) !== null) as number[];
+        if (samples.length > 0) {
+          return `${samples.length} samples, ${Math.min(...samples).toFixed(2)}-${Math.max(...samples).toFixed(2)} V`;
+        }
+      }
+      if (num(value.maf_gs) !== null) {
+        const rpm = num(value.rpm);
+        return `${(value.maf_gs as number).toFixed(2)} g/s${rpm !== null ? ` at ${rpm.toFixed(0)} rpm` : ""}`;
+      }
+      if (Object.keys(value).length === 1 && "iat_c" in value && num(value.iat_c) !== null) {
+        return `${(value.iat_c as number).toFixed(1)} °C intake air`;
+      }
+      if ("outcome" in value) {
+        return outcomeMeasured(value.outcome);
+      }
+      const parts = Object.entries(value).map(([k, v]) => `${k}: ${shortScalar(v)}`);
+      return parts.length > 0 ? parts.join(", ") : "—";
+    }
+    if (Array.isArray(value)) {
+      if (value.length === 0) return testRef === "dtc_read" ? "No codes stored" : "—";
+      return value.map((v) => shortScalar(v)).join(", ");
+    }
+    if (typeof value === "boolean") return value ? "yes" : "no";
+    if (value === null || value === undefined) return "—";
+    if (num(value) !== null) return shortScalar(value);
+    const slug = String(value);
+    return slug in OUTCOME_LABELS ? outcomeMeasured(slug) : slug;
+  } catch {
+    return shortScalar(raw);
+  }
+}
+
+/** Human string for an expected payload (dict, slug, or repr string). */
+export function formatReportExpected(raw: unknown): string {
+  try {
+    const value = parsePyRepr(raw);
+    if (isRecord(value)) {
+      const source = isRecord(value.source) ? value.source : {};
+      if (source.kind === "manual_page" && num(value.min) !== null && num(value.max) !== null) {
+        const units = String(value.units ?? "").trim();
+        const ref = typeof source.ref === "string" && source.ref ? ` (manual ${source.ref})` : "";
+        const middle = units ? ` ${units}` : "";
+        return `Book range ${(value.min as number).toFixed(2)}-${(value.max as number).toFixed(2)}${middle}${ref}`;
+      }
+      if ("outcome" in value) return outcomeLabel(value.outcome);
+      const parts = Object.entries(value).map(([k, v]) => `${k}: ${shortScalar(v)}`);
+      return parts.length > 0 ? parts.join(", ") : "—";
+    }
+    if (typeof value === "boolean") return value ? "yes" : "no";
+    if (value === null || value === undefined) return "—";
+    if (num(value) !== null) return shortScalar(value);
+    return outcomeLabel(String(value));
+  } catch {
+    return shortScalar(raw);
+  }
+}
