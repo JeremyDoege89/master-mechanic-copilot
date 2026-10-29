@@ -10,5 +10,5 @@
   ],
   "mode": "PUSH_TO_TALK",
   "model": "muse-voice-transcribe-1.0",
-  "provisional": true
+  "provisional": false
 }

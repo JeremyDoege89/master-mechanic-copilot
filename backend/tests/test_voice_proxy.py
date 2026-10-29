@@ -125,6 +125,38 @@ def test_final_appends_one_asr_segment_and_budgets(tmp_path, monkeypatch):
     assert "test-key-never-logged" not in blob
 
 
+def test_handle_final_awaits_async_append(tmp_path, monkeypatch):
+    """M7 review #1: the route passes an async append; it must be awaited.
+
+    The production route's append_event is `async def` (it also
+    broadcasts). handle_final called it without awaiting, so the
+    coroutine was discarded and no asr_segment ever landed in the log.
+    """
+    import asyncio
+    import warnings
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    session = sess_mod.get_registry().create(user_level="L2", tools=[], mode="live", vehicle=None)
+    proxy = voice_mod.AsrProxy(tracker=_tracker())
+
+    async def append_event(payload: dict):
+        return sess_mod.get_registry().append(session, "asr_segment", payload)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        payload = asyncio.run(
+            proxy.handle_final(
+                {"type": "transcript", "transcript": "next test",
+                 "final": True, "audioProcessedMs": 1200},
+                session,
+                append_event,
+            )
+        )
+    assert payload["text"] == "next test"
+    types = [e["type"] for e in session.store.iter_replay()]
+    assert "asr_segment" in types
+
+
 def test_over_budget_final_raises_before_append(tmp_path, monkeypatch):
     import asyncio
 
@@ -238,6 +270,25 @@ def test_handshake_key_never_leaks(tmp_path, monkeypatch, caplog):
     assert sentinel not in leak_surfaces
 
 
+def test_asr_model_id_guard_rejects_contributor_and_foreign(monkeypatch):
+    """M7 review #12: the voice path enforces the Meta/contributor guard."""
+    from mmc.meta.client import MetaClientError
+
+    monkeypatch.setenv("MODEL_ASR", "muse-voice-transcribe-1.0-contributor")
+    with pytest.raises(MetaClientError):
+        voice_mod.check_asr_model_id()
+    with pytest.raises(MetaClientError):
+        voice_mod.AsrProxy(tracker=_tracker())
+    monkeypatch.setenv("MODEL_ASR", "gpt-4o-transcribe")
+    with pytest.raises(MetaClientError):
+        voice_mod.check_asr_model_id()
+    with pytest.raises(MetaClientError):
+        voice_mod.AsrProxy(tracker=_tracker())
+    monkeypatch.setenv("MODEL_ASR", "muse-voice-transcribe-1.0")
+    assert voice_mod.check_asr_model_id() == "muse-voice-transcribe-1.0"
+    assert voice_mod.session_config()["model"] == "muse-voice-transcribe-1.0"
+
+
 def test_proxy_maps_stop_to_endstream(tmp_path, monkeypatch):
     """Client stop half-closes upstream input via endStream (never 'stop')."""
     import asyncio
@@ -271,6 +322,242 @@ def test_proxy_maps_stop_to_endstream(tmp_path, monkeypatch):
     texts = [s for s in fake.sent if isinstance(s, str)]
     assert json.dumps({"type": "endStream"}) in texts
     assert not [s for s in texts if json.loads(s).get("type") == "stop"]
+
+
+def test_final_without_reported_duration_bills_forwarded_audio(tmp_path, monkeypatch):
+    """M7 review #3: no audioProcessedMs must not book $0.
+
+    The proxy forwarded 48,000 PCM bytes (1.0 s at PCM_24KHZ) but the
+    upstream final reports no duration. The ledger must bill the
+    measured second, and the segment carries it.
+    """
+    import asyncio
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+
+    class GatedUpstream(FakeUpstream):
+        """Yield the final only after the client audio arrived (like live)."""
+
+        async def recv(self):
+            for _ in range(5000):
+                if self.sent:
+                    break
+                await asyncio.sleep(0.001)
+            return await super().recv()
+
+    fake = GatedUpstream([
+        {"type": "transcript", "transcript": "next test", "final": True},
+    ])
+    session = sess_mod.get_registry().create(user_level="L2", tools=[], mode="live", vehicle=None)
+    tracker = _tracker()
+    proxy = voice_mod.AsrProxy(
+        upstream_factory=lambda config: _immediate_fake(fake),
+        tracker=tracker,
+    )
+
+    async def _immediate_fake(f):
+        return f
+
+    appended: list[dict] = []
+    frames: list[str] = []
+    script = [{"bytes": b"\x00" * 48000}]
+
+    class FakeClient:
+        async def receive(self):
+            await asyncio.sleep(0)
+            if script:
+                return script.pop(0)
+            # Hold the socket like a real client reading finals; the run
+            # must still finish once the upstream final lands (#11).
+            await asyncio.sleep(0.5)
+            raise RuntimeError("client closed")
+
+    async def send_to_client(text: str):
+        frames.append(text)
+
+    before = tracker.spend_usd
+    asyncio.run(proxy.run(
+        FakeClient(), session,
+        lambda payload: appended.append(payload) or sess_mod.get_registry().append(
+            session, "asr_segment", payload),
+        send_to_client=send_to_client,
+    ))
+    assert len(appended) == 1
+    assert appended[0]["duration_s"] == pytest.approx(1.0)
+    assert tracker.spend_usd == pytest.approx(before + estimate_asr(1.0))
+    assert tracker.spend_usd > before
+
+
+def test_empty_final_appends_nothing_and_forwards_nothing(tmp_path, monkeypatch):
+    """M7 review #3: a textless final (tone probe) is never a segment.
+
+    A tone yields ``final ""`` (or a textless ``speechComplete``): the
+    proxy must append no asr_segment and forward no final frame.
+    """
+    import asyncio
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    fake = FakeUpstream([
+        {"type": "transcript", "transcript": "", "final": True, "audioProcessedMs": 500},
+        {"type": "speechComplete"},
+    ])
+    session = sess_mod.get_registry().create(user_level="L2", tools=[], mode="live", vehicle=None)
+    proxy = voice_mod.AsrProxy(
+        upstream_factory=lambda config: _immediate_fake(fake),
+        tracker=_tracker(),
+    )
+
+    async def _immediate_fake(f):
+        return f
+
+    appended: list[dict] = []
+    frames: list[str] = []
+    script = [{"text": json.dumps({"type": "stop"})}]
+
+    class FakeClient:
+        async def receive(self):
+            await asyncio.sleep(0)
+            if script:
+                return script.pop(0)
+            await asyncio.sleep(0.2)
+            raise RuntimeError("client closed")
+
+    async def send_to_client(text: str):
+        frames.append(text)
+
+    asyncio.run(proxy.run(
+        FakeClient(), session,
+        lambda payload: appended.append(payload) or sess_mod.get_registry().append(
+            session, "asr_segment", payload),
+        send_to_client=send_to_client,
+    ))
+    assert appended == []
+    assert [f for f in frames if json.loads(f).get("type") == "final"] == []
+    types = [e["type"] for e in session.store.iter_replay()]
+    assert "asr_segment" not in types
+
+
+def test_run_returns_after_upstream_finishes_with_client_holding_socket(
+    tmp_path, monkeypatch
+):
+    """M7 review #11: run() must not hang once the upstream is done.
+
+    Normal PUSH_TO_TALK completion ends the upstream while the client
+    still holds its socket open. run() must notice the finished pump
+    instead of blocking forever in client receive().
+    """
+    import asyncio
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    fake = FakeUpstream([
+        {"type": "transcript", "transcript": "next test",
+         "final": True, "audioProcessedMs": 1000},
+    ])
+    closed = {"value": False}
+
+    async def _close():
+        closed["value"] = True
+
+    fake.close = _close  # type: ignore[method-assign]
+    session = sess_mod.get_registry().create(user_level="L2", tools=[], mode="live", vehicle=None)
+    proxy = voice_mod.AsrProxy(
+        upstream_factory=lambda config: _immediate_fake(fake),
+        tracker=_tracker(),
+    )
+
+    async def _immediate_fake(f):
+        return f
+
+    appended: list[dict] = []
+
+    class HoldingClient:
+        async def receive(self):
+            await asyncio.sleep(60)
+
+    async def send_to_client(text: str):
+        return None
+
+    async def _main():
+        await asyncio.wait_for(
+            proxy.run(
+                HoldingClient(), session,
+                lambda payload: appended.append(payload) or sess_mod.get_registry().append(
+                    session, "asr_segment", payload),
+                send_to_client=send_to_client,
+            ),
+            timeout=5,
+        )
+
+    asyncio.run(_main())
+    assert len(appended) == 1
+    assert closed["value"] is True
+
+
+def test_proxy_replays_live_spike_fixtures(tmp_path, monkeypatch):
+    """The recorded live turn replays through the proxy verbatim.
+
+    Upstream messages are rebuilt from ``stream_shapes.jsonl`` previews:
+    every partial forwards byte-identically (as parsed content) and the
+    final persists as the asr_segment with the reported duration.
+    """
+    import asyncio
+    from pathlib import Path
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    base = Path(__file__).parent / "fixtures" / "asr"
+    messages: list[dict] = []
+    for line in (base / "stream_shapes.jsonl").read_text().splitlines():
+        shape = json.loads(line)
+        if shape["type"] not in ("transcript", "audioProgress"):
+            continue
+        msg = json.loads(shape["preview"])
+        assert msg.get("type") == shape["type"]
+        messages.append(msg)
+    assert [m.get("transcript") for m in messages if m.get("type") == "transcript"] == [
+        "one,", "one, three,", "one, three, five.", "one, three, five.",
+    ]
+    fake = FakeUpstream(messages)
+    session = sess_mod.get_registry().create(user_level="L2", tools=[], mode="live", vehicle=None)
+    proxy = voice_mod.AsrProxy(
+        upstream_factory=lambda config: _immediate_fake(fake),
+        tracker=_tracker(),
+    )
+
+    async def _immediate_fake(f):
+        return f
+
+    appended: list[dict] = []
+    frames: list[str] = []
+    script = [{"text": json.dumps({"type": "stop"})}]
+
+    class FakeClient:
+        async def receive(self):
+            await asyncio.sleep(0)
+            if script:
+                return script.pop(0)
+            await asyncio.sleep(0.5)
+            raise RuntimeError("client closed")
+
+    async def send_to_client(text: str):
+        frames.append(text)
+
+    asyncio.run(proxy.run(
+        FakeClient(), session,
+        lambda payload: appended.append(payload) or sess_mod.get_registry().append(
+            session, "asr_segment", payload),
+        send_to_client=send_to_client,
+    ))
+    assert len(appended) == 1
+    assert appended[0]["text"] == "one, three, five."
+    assert appended[0]["duration_s"] == pytest.approx(2.64)
+    # Partials forward verbatim; audioProgress never reaches the client.
+    partials = [json.loads(f) for f in frames]
+    assert [m.get("transcript") for m in partials if m.get("type") == "transcript"] == [
+        "one,", "one, three,", "one, three, five.",
+    ]
+    assert not [f for f in partials if f.get("type") == "audioProgress"]
+    finals = [f for f in partials if f.get("type") == "final"]
+    assert len(finals) == 1 and finals[0]["text"] == "one, three, five."
 
 
 def test_asr_segment_alone_moves_no_posterior(client):

@@ -29,11 +29,11 @@ import uuid
 from pathlib import Path
 from typing import Any, Protocol
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from pydantic import BaseModel
 
 from mmc import sessions as sess
-from mmc.api.routes import MAX_BLOB_BYTES
+from mmc.api.routes import MAX_BLOB_BYTES, read_upload_capped
 from mmc.engine import evaluator as evaluator_mod
 from mmc.meta.budget import BudgetExceeded
 from mmc.meta.client import MetaClient
@@ -165,16 +165,18 @@ def _bound_analyzer(session: sess.Session) -> UploadAnalyzer:
 @router.post("/sessions/{session_id}/uploads")
 async def upload_file_route(
     session_id: str,
+    request: Request,
     file: UploadFile = File(...),
     kind: str = Form(...),
 ):
     session = _require_session(session_id)
     if kind not in UPLOAD_KINDS:
         raise HTTPException(status_code=400, detail=f"unknown upload kind {kind!r}")
-    data = await file.read()
-    if len(data) > MAX_BLOB_BYTES:
-        raise HTTPException(status_code=413, detail="blob too large")
+    # M7 review #10: bounded read (never buffer past the cap).
+    data = await read_upload_capped(file, request, MAX_BLOB_BYTES)
     blob_ref, sha = blob_store.put(data)
+    # M7 review #8: server-side ownership — this session uploaded it.
+    sess.record_session_blob(session.id, sha)
     evidence_id: str | None = None
     if session.meta.get("mode") != "replay":
         registry = sess.get_registry()

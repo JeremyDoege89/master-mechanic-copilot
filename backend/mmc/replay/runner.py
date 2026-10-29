@@ -164,8 +164,14 @@ def replay_bundle_bytes(
         vehicle = None
     rows = mmrec.event_rows(members)
     verify_event_chain(rows, label)
+    registry = sess.get_registry()
+    session = registry.create(
+        user_level=user_level, tools=list(tools), mode="replay", vehicle=vehicle
+    )
     # Bundle-embedded blobs (demo photo bytes) land in the blob store so
     # the evidence-scoped GET can serve them on the replay session.
+    # M7 review #8: ownership is recorded for the new session, so the
+    # download gate (ownership + own-log reference) passes on replays.
     from mmc.store import blobs as blob_store
 
     for name, data in mmrec.blob_members(members).items():
@@ -173,10 +179,7 @@ def replay_bundle_bytes(
         if digest != mmrec.sha256(data):
             raise mmrec.MmrecError(f"{label}: blob name/hash mismatch on {name}")
         blob_store.put(data)
-    registry = sess.get_registry()
-    session = registry.create(
-        user_level=user_level, tools=list(tools), mode="replay", vehicle=vehicle
-    )
+        sess.record_session_blob(session.id, digest)
     fold_rows(session, rows)
     restore_reports(session)
     return session
@@ -200,6 +203,13 @@ def replay_session(source_id: str) -> sess.Session:
     rows = [
         {"type": e["type"], "payload": e["payload"]} for e in source.store.iter_replay()
     ]
+    # M7 review #8: the replay inherits the source's blob ownership, so
+    # evidence-scoped downloads keep working on the copy.
+    try:
+        owned = sess._session_blobs_path(source.id).read_text(encoding="utf-8")
+        sess._session_blobs_path(session.id).write_text(owned, encoding="utf-8")
+    except OSError:
+        pass
     fold_rows(session, rows)
     restore_reports(session)
     return session

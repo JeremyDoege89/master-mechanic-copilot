@@ -29,6 +29,24 @@ class VoiceCommandTest {
     }
 
     @Test
+    fun rpmTokensNeverBecomeTheValue() {
+        // M7 review #5: 2500/rpm is the condition, never the measurement.
+        val cruise = VoiceCommands.parse("log cruise trim plus four at 2500") as VoiceIntent.LogTrim
+        assertEquals("cruise", cruise.part)
+        assertEquals(4.0, cruise.value, 1e-9)
+        val volts = VoiceCommands.parse("log voltage twelve volts and 2500 rpm") as VoiceIntent.LogVoltage
+        assertEquals(12.0, volts.volts, 1e-9)
+    }
+
+    @Test
+    fun sixtyToNinetyNumberWords() {
+        val trim = VoiceCommands.parse("log idle trim plus sixty") as VoiceIntent.LogTrim
+        assertEquals(60.0, trim.value, 1e-9)
+        val volts = VoiceCommands.parse("log sixteen volts") as VoiceIntent.LogVoltage
+        assertEquals(16.0, volts.volts, 1e-9)
+    }
+
+    @Test
     fun repeatRiskLevelUnknown() {
         assertEquals(VoiceIntent.Repeat, VoiceCommands.parse("repeat"))
         assertEquals(VoiceIntent.Risk, VoiceCommands.parse("what's the risk"))

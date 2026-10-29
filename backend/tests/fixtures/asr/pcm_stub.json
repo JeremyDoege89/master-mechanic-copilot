@@ -3,7 +3,7 @@
   "captured": "spike_voice_asr.py owner run",
   "channels": 1,
   "encoding": "PCM_24KHZ",
-  "provisional": true,
+  "provisional": false,
   "sample_rate_hz": 24000,
   "seconds": 2.5657916666666667
 }

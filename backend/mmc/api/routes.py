@@ -8,7 +8,7 @@ import re
 import threading
 import uuid
 
-from fastapi import APIRouter, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, File, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
@@ -230,14 +230,44 @@ async def post_replay(body: ReplayBody):
     return {"session_id": session.id, "speed": body.speed}
 
 
+async def read_upload_capped(
+    file: UploadFile, request: Request, limit: int | None = None
+) -> bytes:
+    """Bounded upload read (M7 review #10).
+
+    Rejects early on a declared Content-Length past the cap, then streams
+    in 1 MiB chunks so a multi-GB body is never fully buffered before the
+    413 can fire. ``limit`` defaults to this module's ``MAX_BLOB_BYTES``;
+    the uploads route passes its own so its cap stays patchable per route.
+    """
+    cap = MAX_BLOB_BYTES if limit is None else limit
+    try:
+        declared = request.headers.get("content-length", "")
+        if declared and int(declared) > cap:
+            raise HTTPException(status_code=413, detail="blob too large")
+    except ValueError:
+        pass
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await file.read(1024 * 1024)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > cap:
+            raise HTTPException(status_code=413, detail="blob too large")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
 @router.post("/sessions/{session_id}/blobs")
-async def upload_blob(session_id: str, file: UploadFile = File(...)):
+async def upload_blob(session_id: str, request: Request, file: UploadFile = File(...)):
     session = _require_session(session_id)
     _require_writable(session)
-    data = await file.read()
-    if len(data) > MAX_BLOB_BYTES:
-        raise HTTPException(status_code=413, detail="blob too large")
+    data = await read_upload_capped(file, request)
     blob_ref, sha = blob_store.put(data)
+    # M7 review #8: server-side ownership — this session uploaded it.
+    sess.record_session_blob(session.id, sha)
     return {"blob_ref": blob_ref, "sha256": sha}
 
 
@@ -306,6 +336,11 @@ async def download_blob(session_id: str, sha256: str):
     session = _require_session(session_id)
     digest = sha256.lower()
     if not _BLOB_SHA_RE.fullmatch(digest):
+        raise HTTPException(status_code=404, detail="unknown blob")
+    # M7 review #8: serve only blobs this session itself produced or
+    # uploaded. Ownership is recorded server-side at upload time — a
+    # client-postable evidence record naming a foreign SHA is not enough.
+    if not sess.session_owns_blob(session.id, digest):
         raise HTTPException(status_code=404, detail="unknown blob")
     etype = _session_blob_types(session).get(digest)
     if etype is None:
@@ -468,6 +503,8 @@ async def request_clear_codes(session_id: str, body: ClearRequestBody):
     for etype, doc in snapshots:
         blob = _json.dumps(doc, sort_keys=True).encode("utf-8")
         blob_ref, sha = blob_store.put(blob)
+        # M7 review #8: server-side ownership — the backend produced it.
+        sess.record_session_blob(session.id, sha)
         evidence = {
             "evidence_id": uuid.uuid4().hex,
             "type": etype,
@@ -531,69 +568,76 @@ async def build_report(session_id: str):
 
     session = _require_session(session_id)
     registry = sess.get_registry()
-    state = sess.compute_state(session)
-    report = sess.build_report(session, state)
-    # Finding #11: a stored review with no newer diagnostic event is
-    # still current — reuse it instead of spending a new Wonder call.
-    # This check runs before (and in) public mode, so demo-bundle
-    # recorded reviews keep serving at $0 too.
-    head_hash = report["reproducibility"]["log_head_hash"]
-    stored = sess.find_current_report_review(session)
-    if stored is not None:
-        report["wonder_review"] = stored
-        report["wonder_unavailable"] = None
-        audit = None
-    # One Wonder review per report; unavailable (no key / budget / API
-    # error) ships the report with wonder_review null, never blocks it.
-    # Wonder stays off in public replay mode (M6 fix 3).
-    else:
-        from mmc import public as public_mod
-
-        if public_mod.is_public():
-            report["wonder_review"] = None
-            report["wonder_unavailable"] = "AI review unavailable in public replay mode."
+    # M7 review #6: the check -> Wonder call -> append sequence holds the
+    # per-session lock (like post_test_result), so two simultaneous builds
+    # serialise: the second reuses the first build's stored review instead
+    # of paying for its own Wonder call.
+    async with session_lock(session.id):
+        state = sess.compute_state(session)
+        report = sess.build_report(session, state)
+        # Finding #11: a stored review with no newer diagnostic event is
+        # still current — reuse it instead of spending a new Wonder call.
+        # This check runs before (and in) public mode, so demo-bundle
+        # recorded reviews keep serving at $0 too.
+        head_hash = report["reproducibility"]["log_head_hash"]
+        stored = sess.find_current_report_review(session)
+        if stored is not None:
+            report["wonder_review"] = stored
+            report["wonder_unavailable"] = None
             audit = None
+        # One Wonder review per report; unavailable (no key / budget / API
+        # error) ships the report with wonder_review null, never blocks it.
+        # Wonder stays off in public replay mode (M6 fix 3).
         else:
-            audit = wonder_mod.build_audit_bundle(report, state)
-    if audit is not None:
-        try:
-            default_client = MetaClient(
-                on_call=lambda record: registry.append(
-                    session, record.get("kind", "llm_call"), record
-                ),
-            )
-        except MetaClientError as e:
-            report["wonder_review"] = None
-            report["wonder_unavailable"] = f"AI review unavailable: {e}"
-        else:
-            # attach_review maps budget/API/cache/invalid-review failures
-            # to null + the unavailable line itself (finding #3); the
-            # extra guard keeps an unexpected ValueError/ValidationError
-            # from 500ing the build before save_report/report_built.
+            from mmc import public as public_mod
+
+            if public_mod.is_public():
+                report["wonder_review"] = None
+                report["wonder_unavailable"] = "AI review unavailable in public replay mode."
+                audit = None
+            else:
+                audit = wonder_mod.build_audit_bundle(report, state)
+        if audit is not None:
             try:
-                wonder_mod.attach_review(report, audit, default_client)
-            except (MetaClientError, NoCachedResponse, ValueError, jsonschema.ValidationError) as e:
+                default_client = MetaClient(
+                    on_call=lambda record: registry.append(
+                        session, record.get("kind", "llm_call"), record
+                    ),
+                )
+            except MetaClientError as e:
                 report["wonder_review"] = None
                 report["wonder_unavailable"] = f"AI review unavailable: {e}"
-    # M6B §1.2: where live Wonder is skipped or fails, serve the recorded
-    # review folded in with a demo bundle ($0) instead of "unavailable".
-    if report.get("wonder_review") is None:
-        recorded = sess.find_recorded_wonder_review(session)
-        if recorded is not None:
-            report["wonder_review"] = recorded
-            report["wonder_unavailable"] = None
-    sess.save_report(registry, report)
-    # The review rides in the event so replays rebuild it with no live call.
-    registry.append(
-        session,
-        "report_built",
-        {
-            "report_id": report["report_id"],
-            "log_head_hash": head_hash,
-            "wonder_review": report.get("wonder_review"),
-            "wonder_unavailable": report.get("wonder_unavailable"),
-        },
-    )
+            else:
+                # attach_review maps budget/API/cache/invalid-review failures
+                # to null + the unavailable line itself (finding #3); the
+                # extra guard keeps an unexpected ValueError/ValidationError
+                # from 500ing the build before save_report/report_built.
+                try:
+                    wonder_mod.attach_review(report, audit, default_client)
+                except (MetaClientError, NoCachedResponse, ValueError, jsonschema.ValidationError) as e:
+                    report["wonder_review"] = None
+                    report["wonder_unavailable"] = f"AI review unavailable: {e}"
+        # M6B §1.2: where live Wonder is skipped or fails, serve the recorded
+        # review folded in with a demo bundle ($0) instead of "unavailable" —
+        # but only while it is still current (M7 review #7): a newer
+        # diagnostic event invalidates it and the build ships null.
+        if report.get("wonder_review") is None:
+            recorded = sess.find_recorded_wonder_review_if_current(session)
+            if recorded is not None:
+                report["wonder_review"] = recorded
+                report["wonder_unavailable"] = None
+        sess.save_report(registry, report)
+        # The review rides in the event so replays rebuild it with no live call.
+        registry.append(
+            session,
+            "report_built",
+            {
+                "report_id": report["report_id"],
+                "log_head_hash": head_hash,
+                "wonder_review": report.get("wonder_review"),
+                "wonder_unavailable": report.get("wonder_unavailable"),
+            },
+        )
     await _broadcast(session.id)
     return {"report_id": report["report_id"], "url": f"/reports/{report['report_id']}.json"}
 

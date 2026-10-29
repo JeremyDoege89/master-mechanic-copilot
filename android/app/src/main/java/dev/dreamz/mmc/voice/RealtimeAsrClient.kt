@@ -58,6 +58,31 @@ class RealtimeAsrClient(baseUrl: String, private val sessionId: String) {
         return frame.substring(first + 1, second).lowercase()
     }
 
+    /** Caption text from a transcript/final frame (transcript, then text). */
+    fun captionText(frame: String): String {
+        for (key in listOf("\"transcript\"", "\"text\"")) {
+            val i = frame.indexOf(key)
+            if (i < 0) continue
+            val colon = frame.indexOf(':', i + key.length)
+            if (colon < 0) continue
+            val first = frame.indexOf('"', colon)
+            if (first < 0) continue
+            val sb = StringBuilder()
+            var j = first + 1
+            while (j < frame.length && frame[j] != '"') {
+                if (frame[j] == '\\' && j + 1 < frame.length) {
+                    j++
+                    sb.append(frame[j])
+                } else {
+                    sb.append(frame[j])
+                }
+                j++
+            }
+            if (j < frame.length) return sb.toString()
+        }
+        return ""
+    }
+
     /** Value of the `transcript` event `final` flag, null when absent. */
     private fun frameFinal(frame: String): Boolean? {
         val key = "\"final\""

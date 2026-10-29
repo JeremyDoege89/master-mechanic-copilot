@@ -26,14 +26,16 @@ send; the key never reaches logs, fixtures, ``asr_segment`` events, or
 client frames (pinned by ``test_handshake_key_never_leaks`` with a
 frame-recording fake upstream).
 
-Live upstream fixtures under ``backend/tests/fixtures/asr/`` stay
-``provisional:true`` until the owner reruns ``scripts/spike_voice_asr.py``
-live; a fixture test asserts the flag so provisional data is never
-mistaken for verified.
+Live upstream fixtures under ``backend/tests/fixtures/asr/`` are
+``provisional:false`` since the owner reran ``scripts/spike_voice_asr.py``
+live on real speech ("one, three, five."); a fixture test pins the flag
+plus the recorded partial/final transcripts, and the proxy suite replays
+them.
 """
 
 from __future__ import annotations
 
+import inspect
 import json
 import os
 import uuid
@@ -43,6 +45,29 @@ from mmc.meta.budget import estimate_asr, get_tracker
 
 ASR_REALTIME_URL = os.environ.get("ASR_REALTIME_URL", "wss://api.meta.ai/v1/asr/realtime")
 ASR_MODEL = os.environ.get("MODEL_ASR", "muse-voice-transcribe-1.0")
+
+
+def check_asr_model_id(model_id: str | None = None) -> str:
+    """Validate the ASR model pin (M7 review #12).
+
+    Same rule as ``MetaClient`` (client.py): contributor-mode IDs and
+    non-Meta IDs are refused instead of being sent upstream and echoed
+    into session ``model_pins`` as if pinned.
+    """
+    from mmc.meta.client import MODEL_KEY_PREFIXES, MetaClientError
+    from mmc.meta.client import _is_contributor_model
+
+    model = model_id if model_id is not None else os.environ.get(
+        "MODEL_ASR", "muse-voice-transcribe-1.0"
+    )
+    if _is_contributor_model(model):
+        raise MetaClientError(f"refusing contributor-mode model ID for asr: {model!r}")
+    prefixes = MODEL_KEY_PREFIXES.get("asr", ())
+    if not model.strip().lower().startswith(prefixes):
+        raise MetaClientError(
+            f"refusing non-Meta model ID for asr: {model!r} (want prefix {prefixes!r})"
+        )
+    return model
 # Documented engine-native encoding (signed 16-bit little-endian mono at
 # 24 kHz = 48,000 bytes/s). Must match the Android capture rate
 # (VoiceAudioSpec.SAMPLE_RATE_HZ).
@@ -95,11 +120,12 @@ def session_config(pack: Any = None) -> dict:
     """Key-free handshake fields (safe to log, fixture, and shape-pin).
 
     ``build_handshake`` adds ``authorization`` for the single upstream
-    send; this frame never carries the key.
+    send; this frame never carries the key. The model pin is validated
+    (M7 review #12), so a bad ``MODEL_ASR`` fails here, not upstream.
     """
     return {
         "audioEncoding": AUDIO_ENCODING,
-        "model": ASR_MODEL,
+        "model": check_asr_model_id(),
         "mode": ASR_MODE,
         "keywords": build_biasing_list(pack),
     }
@@ -199,6 +225,8 @@ async def default_upstream_factory(config: dict) -> Any:
     — the only server frame with no ``type`` field, carrying ``sessionId``.
     An ``error``-typed first frame raises with the server message.
     """
+    # M7 review #12: never dial with a contributor/foreign model ID.
+    check_asr_model_id()
     try:
         import websockets  # type: ignore[import]
     except ImportError as exc:
@@ -244,13 +272,21 @@ class AsrProxy:
     defaults to the shared Meta ledger.
     """
 
+    # 16-bit mono PCM at 24 kHz: 48,000 forwarded bytes = 1 s of audio.
+    PCM_BYTES_PER_SECOND = SAMPLE_RATE_HZ * 2
+
     def __init__(
         self,
         upstream_factory: UpstreamFactory | None = None,
         tracker: Any = None,
     ) -> None:
+        # M7 review #12: refuse contributor/foreign model IDs at startup.
+        self._asr_model = check_asr_model_id()
         self._factory = upstream_factory or default_upstream_factory
         self._tracker = tracker
+        # PCM bytes forwarded upstream in the current turn (M7 review #3:
+        # the only duration the proxy measures itself).
+        self._pcm_bytes = 0
 
     @property
     def tracker(self) -> Any:
@@ -261,20 +297,38 @@ class AsrProxy:
         msg: dict,
         session: Any,
         append_event: Callable[[dict], Any],
-    ) -> dict:
-        """Persist one upstream final as asr_segment; return the event payload."""
+    ) -> dict | None:
+        """Persist one upstream final as asr_segment; return the event payload.
+
+        Returns ``None`` (appending and forwarding nothing) for a textless
+        final — a tone probe's ``final ""`` or an empty ``speechComplete``
+        is not a transcript. Billing always uses the maximum of the
+        upstream-reported and the proxy-measured (forwarded PCM) duration
+        so a missing ``audioProcessedMs`` can never book $0 (M7 review #3).
+        """
         from mmc import voice_commands as vc_mod
 
         text = _final_text(msg)
-        duration_s = _final_duration_s(msg)
+        reported_s = _final_duration_s(msg)
+        measured_s = max(0.0, self._pcm_bytes / self.PCM_BYTES_PER_SECOND)
+        duration_s = max(reported_s, measured_s)
         # Budget: pre-check the estimate, then ledger the actual seconds.
         self.tracker.check(estimate_asr(duration_s or 1.0))
+        self._pcm_bytes = 0
+        if not text:
+            self.tracker.add(estimate_asr(duration_s))
+            return None
         payload = {
             "text": text,
             "duration_s": duration_s,
             "command": vc_mod.parse(text).get("intent", "unknown"),
         }
-        append_event(payload)
+        # M7 review #1: the route's append is `async def` (append +
+        # broadcast) while tests inject sync appends — await whatever is
+        # awaitable so production finals actually land in the event log.
+        result = append_event(payload)
+        if inspect.isawaitable(result):
+            await result
         self.tracker.add(estimate_asr(duration_s))
         return payload
 
@@ -327,9 +381,12 @@ class AsrProxy:
                             if on_budget_exceeded is not None:
                                 await on_budget_exceeded()
                             return
-                        await _send(json.dumps(
-                            {"type": "final", **payload}, sort_keys=True
-                        ))
+                        # A textless final returns None: billed, but neither
+                        # appended nor forwarded (M7 review #3).
+                        if payload is not None:
+                            await _send(json.dumps(
+                                {"type": "final", **payload}, sort_keys=True
+                            ))
                     elif isinstance(msg, dict) and msg.get("type") == "error":
                         # Fatal server event (client-safe message only):
                         # forward it, then stop — the server closes next.
@@ -352,51 +409,80 @@ class AsrProxy:
 
         import asyncio as _asyncio
 
-        pump = _asyncio.ensure_future(_pump_upstream())
-        try:
-            while True:
-                try:
-                    incoming = await client_ws.receive()
-                except Exception:
-                    break
-                # Starlette TestClient/WS shapes: dict, str, or bytes.
-                if isinstance(incoming, dict):
-                    text = incoming.get("text")
-                    data = incoming.get("bytes")
-                    if isinstance(data, (bytes, bytearray)):
-                        try:
-                            await upstream.send(bytes(data))
-                        except Exception:
-                            break
-                    elif isinstance(text, str):
-                        try:
-                            ctl = json.loads(text)
-                        except ValueError:
-                            continue
-                        if isinstance(ctl, dict) and ctl.get("type") == "stop":
-                            try:
-                                await upstream.send(json.dumps({"type": "endStream"}))
-                            except Exception:
-                                break
-                        # "start" needs no upstream frame beyond the handshake.
-                elif isinstance(incoming, (bytes, bytearray)):
+        async def _forward(incoming: Any) -> bool:
+            """Forward one client message upstream; False = connection dead."""
+            # Starlette TestClient/WS shapes: dict, str, or bytes.
+            if isinstance(incoming, dict):
+                text = incoming.get("text")
+                data = incoming.get("bytes")
+                if isinstance(data, (bytes, bytearray)):
+                    # M7 review #3: measure the PCM the proxy forwards.
+                    self._pcm_bytes += len(bytes(data))
                     try:
-                        await upstream.send(bytes(incoming))
+                        await upstream.send(bytes(data))
                     except Exception:
-                        break
-                elif isinstance(incoming, str):
+                        return False
+                elif isinstance(text, str):
                     try:
-                        ctl = json.loads(incoming)
+                        ctl = json.loads(text)
                     except ValueError:
-                        continue
+                        return True
                     if isinstance(ctl, dict) and ctl.get("type") == "stop":
                         try:
                             await upstream.send(json.dumps({"type": "endStream"}))
                         except Exception:
-                            break
+                            return False
+                    # "start" needs no upstream frame beyond the handshake.
+            elif isinstance(incoming, (bytes, bytearray)):
+                self._pcm_bytes += len(bytes(incoming))
+                try:
+                    await upstream.send(bytes(incoming))
+                except Exception:
+                    return False
+            elif isinstance(incoming, str):
+                try:
+                    ctl = json.loads(incoming)
+                except ValueError:
+                    return True
+                if isinstance(ctl, dict) and ctl.get("type") == "stop":
+                    try:
+                        await upstream.send(json.dumps({"type": "endStream"}))
+                    except Exception:
+                        return False
+            return True
+
+        pump = _asyncio.ensure_future(_pump_upstream())
+        recv_task: Any = None
+        try:
+            while True:
+                # M7 review #11: race the client receive against pump
+                # completion. The normal PUSH_TO_TALK ending finishes the
+                # upstream while the client still holds its socket open —
+                # blocking unconditionally in receive() would hang here
+                # forever and never close the upstream. A client message
+                # that already completed is still forwarded first, so a
+                # queued stop/PCM burst is never dropped when the pump
+                # wins the race.
+                if recv_task is None:
+                    recv_task = _asyncio.ensure_future(client_ws.receive())
+                await _asyncio.wait(
+                    {recv_task, pump}, return_when=_asyncio.FIRST_COMPLETED
+                )
+                if recv_task.done():
+                    try:
+                        incoming = recv_task.result()
+                    except Exception:
+                        break
+                    recv_task = None
+                    if not await _forward(incoming):
+                        break
                 if pump.done():
+                    if recv_task is not None and not recv_task.done():
+                        recv_task.cancel()
                     break
         finally:
+            if recv_task is not None and not recv_task.done():
+                recv_task.cancel()
             if not pump.done():
                 pump.cancel()
             try:

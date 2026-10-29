@@ -76,6 +76,56 @@ def _require_cache():
 
 # -- offline guarantees (run now) -------------------------------------------
 
+def _decode_dtcs_kotlin_rule(payload: bytes) -> list[str]:
+    """Python mirror of Parsers.decodeDtcs (P/C/B/U + packed nibbles)."""
+    table = "PCBU"
+    assert len(payload) % 2 == 0
+    out = []
+    for b0, b1 in zip(payload[0::2], payload[1::2]):
+        out.append(
+            table[(b0 >> 6) & 0x03]
+            + chr(ord("0") + ((b0 >> 4) & 0x03))
+            + f"{b0 & 0x0F:X}{(b1 >> 4) & 0x0F:X}{b1 & 0x0F:X}"
+        )
+    return out
+
+
+def _transcript_dtcs(raw: bytes) -> list[str]:
+    """DTCs a ReplayTransport playback would show for a Mode 03 response."""
+    rows = [json.loads(line) for line in raw.splitlines()]
+    codes: list[str] = []
+    for i, row in enumerate(rows):
+        if row.get("dir") == "tx" and row.get("data") == "03":
+            rx = rows[i + 1]["data"].replace("\r", "").replace(">", "").strip().split()
+            assert rx[0] == "43", rx
+            payload = bytearray()
+            for tok in rx[1:]:
+                if len(tok) == 4:
+                    payload += bytes((int(tok[:2], 16), int(tok[2:], 16)))
+                else:
+                    payload.append(int(tok, 16))
+            codes = [c for c in _decode_dtcs_kotlin_rule(bytes(payload)) if c != "P0000"]
+    return codes
+
+
+def test_synth_transcript_dtc_cells_decode_to_snapshot_dtcs():
+    """M7 review #14: transcript bytes encode the real P030n codes.
+
+    The coil demo's events say P0303; the transcript must carry the
+    packed bytes for P0303 (``0303``), not ``3033`` (which decodes to a
+    non-existent P3033 through the app's own decoder).
+    """
+    gen = _load_generator()
+    import sim_scenarios as sim_mod
+
+    for sim in ("vacuum_leak", "coil_unplugged"):
+        snap = sim_mod.snapshot(sim)
+        want = [c.upper() for c in snap["points"]["idle"].get("dtcs", [])]
+        raw = gen.synth_transcript(sim, snap)
+        assert _transcript_dtcs(raw) == want
+        if sim == "coil_unplugged":
+            assert want == ["P0303"]
+
 def test_generator_fails_fast_without_demo_cache(tmp_path):
     """Correction 2: no cache -> loud failure naming record_demo_cache.py."""
     gen = _load_generator()

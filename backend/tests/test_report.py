@@ -273,6 +273,100 @@ def test_wonder_rejects_probability_keys(tmp_path):
         wonder_mod.request_review({"report": {}, "audit": "x"}, client)
 
 
+def test_report_build_holds_session_lock_across_wonder_call(
+    client, tmp_path, monkeypatch
+):
+    """M7 review #6: concurrent builds share one Wonder call.
+
+    POST /report must hold the per-session lock across check -> Wonder
+    call -> append, so a second simultaneous build waits and then reuses
+    the first build's stored review instead of paying for its own call.
+    The transport observes the lock state directly: unlocked means the
+    critical section is unguarded and double spend is possible.
+    """
+    import asyncio
+
+    from mmc.meta.client import MetaClient as RealMetaClient
+
+    session_id = _create(client)
+    _run_two_tests(client, session_id)
+
+    class TrackingLock:
+        def __init__(self) -> None:
+            self._lock = asyncio.Lock()
+            self.held_during_call: list = []
+
+        async def __aenter__(self):
+            await self._lock.acquire()
+            return self
+
+        async def __aexit__(self, *exc):
+            self._lock.release()
+            return False
+
+    lock = TrackingLock()
+    monkeypatch.setattr(api_routes, "session_lock", lambda sid: lock)
+
+    def transport(model, kwargs):
+        lock.held_during_call.append(lock._lock.locked())
+        return SimpleNamespace(
+            output_text=json.dumps(_review()),
+            usage={"input_tokens": 5000, "output_tokens": 400},
+        )
+
+    def factory(**kw):
+        return RealMetaClient(
+            api_key="test-key",
+            cache_dir=tmp_path / "llm_cache",
+            replay_cached=False,
+            transport=transport,
+            sleep=lambda s: None,
+            budget=BudgetTracker(hard_stop_usd=120.0),
+            on_call=kw.get("on_call"),
+        )
+
+    monkeypatch.setattr("mmc.meta.client.MetaClient", factory)
+    r = client.post(f"/sessions/{session_id}/report", json={})
+    assert r.status_code == 200, r.text
+    assert lock.held_during_call == [True]
+
+
+def test_stale_recorded_review_not_served_after_new_events(client):
+    """M7 review #7: a recorded review dies with the head it reviewed.
+
+    A demo-bundle recorded review serves keyless while current, but once
+    a newer diagnostic event (here a safety_ack) lands, the next build
+    must ship wonder_review null — never the senior review of a state
+    that no longer exists.
+    """
+    session_id = _create(client)
+    _run_two_tests(client, session_id)
+    session = sess.get_registry().get(session_id)
+    assert session is not None
+    recorded = _review("Recorded senior review.")
+    sess.get_registry().append(
+        session,
+        "report_built",
+        {
+            "report_id": "r-recorded",
+            "log_head_hash": "head-1",
+            "wonder_review": recorded,
+            "wonder_unavailable": None,
+        },
+    )
+    first = client.post(f"/sessions/{session_id}/report", json={})
+    assert first.status_code == 200, first.text
+    served = client.get(first.json()["url"]).json()
+    assert served["wonder_review"] == recorded
+
+    _ack(client, session_id, gate="engine_off")
+    second = client.post(f"/sessions/{session_id}/report", json={})
+    assert second.status_code == 200, second.text
+    rebuilt = client.get(second.json()["url"]).json()
+    assert rebuilt["wonder_review"] is None
+    assert rebuilt["wonder_review"] != recorded
+
+
 def test_pdf_writer_is_stdlib_only():
     src = (ROOT / "backend" / "mmc" / "report" / "pdf.py").read_text()
     for banned in ("jinja2", "reportlab", "fpdf", "weasyprint", "numpy"):

@@ -36,6 +36,20 @@ class RealtimeAsrClientTest {
     }
 
     @Test
+    fun captionTextExtractsTranscriptThenText() {
+        // Live partial shape from the recorded spike fixtures.
+        assertEquals(
+            "one, three,",
+            client.captionText("""{"audioProcessedMs": 2080, "final": false, "transcript": "one, three,", "type": "transcript"}"""),
+        )
+        assertEquals(
+            "next test",
+            client.captionText("""{"type":"final","text":"next test","duration_s":1.2}"""),
+        )
+        assertEquals("", client.captionText("""{"type":"audioProgress","audioProcessedMs":800}"""))
+    }
+
+    @Test
     fun audioSpecIs24kPcm16Mono() {
         assertEquals(24000, VoiceAudioSpec.SAMPLE_RATE_HZ)
         assertEquals(16, VoiceAudioSpec.BITS_PER_SAMPLE)

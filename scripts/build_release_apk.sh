@@ -18,8 +18,12 @@ CHECK=0
 if [ "${1:-}" = "--check" ]; then CHECK=1; fi
 
 # -- env / paths (no key material, path or password is ever committed) --
+# M7 review #13: both passwords are required even for --check, so a real
+# build fails fast here instead of late at Gradle signing.
 [ -n "${MMC_KEYSTORE_PATH:-}" ] || fail "MMC_KEYSTORE_PATH is not set (keystore lives outside the repo)"
 [ -n "${MMC_KEYSTORE_ALIAS:-}" ] || fail "MMC_KEYSTORE_ALIAS is not set"
+[ -n "${MMC_KEYSTORE_PASSWORD:-}" ] || fail "MMC_KEYSTORE_PASSWORD is not set (signing password comes from env, never the repo)"
+[ -n "${MMC_KEY_PASSWORD:-}" ] || fail "MMC_KEY_PASSWORD is not set (key password comes from env, never the repo)"
 case "$MMC_KEYSTORE_PATH" in
   "$ROOT"/*) fail "MMC_KEYSTORE_PATH must point outside the repo (got $MMC_KEYSTORE_PATH)" ;;
 esac
@@ -38,10 +42,31 @@ fi
 # Own-diff guard: a PEM private-key block in the script/gradle diff is key
 # material (env *names* like MMC_KEYSTORE_PASSWORD are fine — they carry
 # no values). Tracked/signing files are covered by the guards above.
-if git -C "$ROOT" diff -- scripts/build_release_apk.sh android/app/build.gradle \
-    | grep -E 'BEGIN .*PRIVATE KEY' >/dev/null; then
+# M7 review #13: the diff covers staged AND unstaged changes (diff HEAD),
+# and untracked signing files / PEM blocks in new script/gradle files fail
+# too — a staged-only or not-yet-staged key must not slip through.
+# Only added lines matter (a removed key is gone). The `^+` filter keeps
+# deletions and context out of the scan, and the pattern itself is split
+# across quotes so this assignment line never matches it either.
+key_pat='BEGIN .*PRIVATE '"KEY"
+if git -C "$ROOT" diff HEAD -- scripts/build_release_apk.sh android/app/build.gradle \
+    | grep '^+' | grep -E "$key_pat" >/dev/null; then
   fail "private-key block in script/gradle diff — refusing"
 fi
+untracked="$(git -C "$ROOT" status --porcelain | awk '$1 == "??" {print $2}')"
+for f in $untracked; do
+  case "$f" in
+    *.jks|*.keystore|local.properties)
+      fail "signing file untracked in worktree ($f) — remove it before building" ;;
+  esac
+  case "$f" in
+    scripts/*|android/*)
+      if [ -f "$ROOT/$f" ] && grep -I -E "$key_pat" "$ROOT/$f" >/dev/null 2>&1; then
+        fail "private-key block in untracked file $f — refusing"
+      fi
+      ;;
+  esac
+done
 
 echo "build_release_apk: keystore OK ($MMC_KEYSTORE_ALIAS @ outside-repo path)"
 if [ "$CHECK" = 1 ]; then
@@ -56,10 +81,13 @@ APK="$ROOT/android/app/build/outputs/apk/release/app-release.apk"
 [ -f "$APK" ] || fail "expected APK missing: $APK"
 
 # -- verify: cert fingerprint (never the key), no secrets inside, clean tree --
+# M7 review #13: apksigner verify is mandatory and fatal. Under
+# `set -o pipefail` a failing verify fails the pipeline (nothing masks a
+# failure), and a missing apksigner fails the build instead of skipping it.
 if command -v apksigner >/dev/null 2>&1; then
-  apksigner verify --print-certs "$APK" | grep -Ei 'certificate|SHA-256' | sed 's/[A-Fa-f0-9]\{40,\}/<fingerprint>/g' || true
+  apksigner verify --print-certs "$APK" | grep -Ei 'certificate|SHA-256' | sed 's/[A-Fa-f0-9]\{40,\}/<fingerprint>/g'
 else
-  echo "build_release_apk: WARN apksigner not on PATH — fingerprint check skipped"
+  fail "apksigner not on PATH — cannot verify the signed APK"
 fi
 if unzip -l "$APK" | grep -Ei '\.env$|\.jks$|\.keystore$|local\.properties' >/dev/null; then
   fail "APK contains a secrets/keystore entry"

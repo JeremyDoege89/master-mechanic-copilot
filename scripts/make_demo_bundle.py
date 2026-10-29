@@ -421,7 +421,9 @@ def synth_transcript(sim: str, snapshot: dict) -> bytes:
         cells = []
         for code in dtcs[:3]:
             digits = "".join(c for c in code if c.isdigit())
-            cells.append("3033" if code.upper().startswith("P030") else (digits[:4] or "0000").ljust(4, "0"))
+            # M7 review #14: packed bytes for the actual code — P0303 is
+            # "0303", which the app decoder reads back as P0303.
+            cells.append((digits[:4] or "0000").ljust(4, "0"))
         return "43 " + " ".join(cells).upper()
 
     rows: list[dict] = []

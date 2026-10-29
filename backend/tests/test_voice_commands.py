@@ -64,7 +64,55 @@ def test_number_words_minus_and_digits():
     assert vc.parse_number([]) is None
 
 
-def test_asr_fixtures_stay_provisional():
+def test_rpm_tokens_never_become_the_value():
+    """M7 review #5: 2500/rpm is the condition, never the measurement."""
+    cruise = vc.parse("log cruise trim plus four at 2500")
+    assert cruise["intent"] == "log_trim"
+    assert cruise["part"] == "cruise"
+    assert cruise["value"] == 4.0
+    volts = vc.parse("log voltage twelve volts and 2500 rpm")
+    assert volts["intent"] == "log_voltage"
+    assert volts["voltage_v"] == 12.0
+
+
+def test_voice_corpus_parity():
+    """Shared Python/Kotlin grammar corpus (M7 review #5)."""
+    import json
+    from pathlib import Path
+
+    corpus = json.loads(
+        (Path(__file__).parent / "fixtures" / "voice_corpus.json").read_text()
+    )
+    assert corpus["cases"], "corpus must not be empty"
+    for case in corpus["cases"]:
+        intent = vc.parse(case["transcript"])
+        expect = case["expect"]
+        assert intent["intent"] == expect["intent"], case["transcript"]
+        for key in ("value", "voltage_v", "part", "level"):
+            if key in expect:
+                assert intent.get(key) == expect[key], (case["transcript"], key)
+
+
+def test_android_corpus_mirror_matches():
+    """The Android resource copy of the corpus must equal the canonical one."""
+    from pathlib import Path
+
+    canonical = Path(__file__).parent / "fixtures" / "voice_corpus.json"
+    mirror = (
+        canonical.parents[3]
+        / "android"
+        / "app"
+        / "src"
+        / "test"
+        / "resources"
+        / "voice_corpus.json"
+    )
+    assert mirror.exists(), f"{mirror} missing: copy backend/tests/fixtures/voice_corpus.json"
+    assert mirror.read_bytes() == canonical.read_bytes(), "corpus mirror drifted"
+
+
+def test_asr_fixtures_are_live():
+    """Live spike fixtures: provisional flipped to false, still key-free."""
     import json
     from pathlib import Path
 
@@ -72,14 +120,26 @@ def test_asr_fixtures_stay_provisional():
 
     base = Path(__file__).parent / "fixtures" / "asr"
     config = json.loads((base / "session_config.json").read_text())
-    assert config["provisional"] is True
+    assert config["provisional"] is False
     # Documented handshake shape, redacted: no credential field names or
     # values anywhere in the committed fixtures.
     assert set(config) - {"captured", "provisional"} == set(voice_mod.session_config())
+    stub = json.loads((base / "pcm_stub.json").read_text())
+    assert stub["provisional"] is False
+    assert stub["encoding"] == "PCM_24KHZ" and stub["sample_rate_hz"] == 24000
     for name in ("session_config.json", "pcm_stub.json", "stream_shapes.jsonl"):
         text = (base / name).read_text()
         assert "Bearer " not in text
         assert "authorization" not in text
         assert "accessToken" not in text
+    transcripts: list[dict] = []
     for line in (base / "stream_shapes.jsonl").read_text().splitlines():
-        assert json.loads(line)["provisional"] is True
+        shape = json.loads(line)
+        assert shape["provisional"] is False
+        if shape["type"] == "transcript":
+            transcripts.append(json.loads(shape["preview"]))
+    # The owner spike's real-speech turn, pinned: partials build up, one final.
+    partials = [m["transcript"] for m in transcripts if m.get("final") is not True]
+    finals = [m["transcript"] for m in transcripts if m.get("final") is True]
+    assert partials == ["one,", "one, three,", "one, three, five."]
+    assert finals == ["one, three, five."]

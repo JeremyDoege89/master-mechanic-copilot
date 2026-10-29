@@ -28,6 +28,12 @@ LEVEL_WORDS = {
 TRIM_TEST_REF = "trim_idle_vs_2500"
 VOLTAGE_TEST_REF = "battery_voltage_rest_running"
 
+# M7 review #5: tokens of the 2500-rpm condition — never the measurement.
+# A bare "2500"/"rpm" must not become a +2500% trim or a 2500 V battery.
+RPM_TOKENS = frozenset({"2500", "rpm", "rpms", "revved", "revs", "rev"})
+
+UNIT_TOKENS = ("volt", "volts", "voltage", "v")
+
 
 def normalize(text: str) -> str:
     """Lowercase, expand punctuation to spaces (keep . + - for numbers)."""
@@ -133,6 +139,37 @@ def _has(tokens: list[str], *phrases: str) -> bool:
     return any(p in joined for p in phrases)
 
 
+def _value_near_unit(tokens: list[str], units: tuple[str, ...]) -> float | None:
+    """Parse the number run immediately left of the last unit token.
+
+    "log voltage twelve volts and 2500 rpm" -> 12.0 (not 2500.0): the
+    value sits next to its unit; the rpm condition sits elsewhere.
+    """
+    unit_at = max(
+        (i for i, tok in enumerate(tokens) if tok in units), default=None
+    )
+    if unit_at is None:
+        return None
+    run: list[str] = []
+    for tok in reversed(tokens[:unit_at]):
+        if tok in _NUMBER_VOCAB or _is_float_token(tok):
+            run.append(tok)
+        else:
+            break
+    run.reverse()
+    if not run:
+        return None
+    return parse_number(run)
+
+
+def _is_float_token(tok: str) -> bool:
+    try:
+        float(tok)
+        return True
+    except ValueError:
+        return False
+
+
 def parse(text: str, focused_test_ref: str | None = None) -> dict:
     """Parse one utterance to a typed intent dict (never raises)."""
     raw = text or ""
@@ -181,10 +218,15 @@ def parse(text: str, focused_test_ref: str | None = None) -> dict:
             part = "idle"
         elif "cruise" in tokens or "2500" in joined or "revved" in tokens:
             part = "cruise"
-        value = parse_number([t for t in tokens if t not in ("log", "idle", "cruise", "trim", "trims")])
-        if value is None:
-            # Fall back: number words may sit before "trim".
-            value = parse_number(tokens)
+        # M7 review #5: the rpm-condition tokens are dropped before value
+        # extraction, and only number-vocabulary tokens are parsed — "log
+        # cruise trim plus four at 2500" is 4.0, never 2500.0. No raw-token
+        # fallback: it would resurrect the excluded 2500.
+        candidates = [
+            t for t in tokens
+            if t not in ("log", "idle", "cruise", "trim", "trims") and t not in RPM_TOKENS
+        ]
+        value = parse_number(_number_tokens(candidates))
         if value is not None:
             return {
                 "intent": "log_trim",
@@ -196,7 +238,13 @@ def parse(text: str, focused_test_ref: str | None = None) -> dict:
 
     # Voltage: "log 12.4 volts".
     if "volt" in joined and "log" in tokens:
-        value = parse_number(_number_tokens(tokens))
+        # M7 review #5: prefer the number next to the unit, so "log
+        # voltage twelve volts and 2500 rpm" is 12.0 V, never 2500 V.
+        value = _value_near_unit(tokens, UNIT_TOKENS)
+        if value is None:
+            value = parse_number(
+                _number_tokens([t for t in tokens if t not in RPM_TOKENS])
+            )
         if value is not None:
             return {
                 "intent": "log_voltage",

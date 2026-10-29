@@ -2,74 +2,66 @@
 # M7 §5 acceptance sweep: every AGENTS.md check runnable without keys/car/network.
 # Prints `Check | Result | Evidence` (PASS/FAIL/SKIP), exits non-zero on any FAIL.
 # Live/owner rows print SKIP with the owner step named, never silently passed.
+#
+# M7 review #4: every command-based row is decided by the underlying
+# command's EXIT CODE via run_row (scripts/sweep_lib.sh) — never by
+# grepping output text, so "1 failed, 19 passed" FAILs instead of
+# matching a "passed" grep.
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FAIL=0
 
-row() { printf '%-42s | %-4s | %s\n' "$1" "$2" "$3"; }
-pass() { row "$1" "PASS" "$2"; }
-fail() { row "$1" "FAIL" "$2"; FAIL=1; }
-skip() { row "$1" "SKIP" "$2"; }
+# shellcheck source=sweep_lib.sh
+source "$ROOT/scripts/sweep_lib.sh"
 
 printf '%-42s | %-4s | %s\n' "Check" "Result" "Evidence"
 printf -- '--------------------------------------------|------|--------------------\n'
 
-# -- backend suites (offline, .venv interpreter) --
-if (cd "$ROOT/backend" && .venv/bin/python -m pytest -q tests/test_schemas.py 2>&1 | tail -1 | grep -q "passed"); then
-  pass "schema examples validate" "test_schemas.py"
-else fail "schema examples validate" "test_schemas.py"; fi
+# -- backend suites (offline, .venv interpreter; exit codes decide) --
+run_row "schema examples validate" bash -c "cd \"$ROOT/backend\" && .venv/bin/python -m pytest -q tests/test_schemas.py"
 
-if (cd "$ROOT/backend" && .venv/bin/python -m pytest -q tests/test_event_store.py tests/test_event_store_threads.py tests/test_chain_properties.py 2>&1 | tail -1 | grep -q "passed"); then
-  pass "event-chain tamper + threading" "test_event_store*.py + chain_properties"
-else fail "event-chain tamper + threading" "see pytest output"; fi
+run_row "event-chain tamper + threading" bash -c "cd \"$ROOT/backend\" && .venv/bin/python -m pytest -q tests/test_event_store.py tests/test_event_store_threads.py tests/test_chain_properties.py"
 
-if (cd "$ROOT/backend" && .venv/bin/python -m pytest -q tests/test_engine_scenarios.py tests/test_engine_properties.py tests/test_engine_replay.py 2>&1 | tail -1 | grep -q "passed"); then
-  pass "sim scenarios converge + replay" "test_engine_scenarios/properties/replay.py"
-else fail "sim scenarios converge + replay" "see pytest output"; fi
+run_row "sim scenarios converge + replay" bash -c "cd \"$ROOT/backend\" && .venv/bin/python -m pytest -q tests/test_engine_scenarios.py tests/test_engine_properties.py tests/test_engine_replay.py"
 
-if (cd "$ROOT/backend" && .venv/bin/python -m pytest -q tests/test_voice_commands.py tests/test_voice_proxy.py 2>&1 | tail -1 | grep -q "passed"); then
-  pass "voice grammar + proxy guards" "test_voice_commands/proxy.py (fake upstream)"
-else fail "voice grammar + proxy guards" "see pytest output"; fi
+run_row "voice grammar + proxy guards" bash -c "cd \"$ROOT/backend\" && .venv/bin/python -m pytest -q tests/test_voice_commands.py tests/test_voice_proxy.py"
 
-if (cd "$ROOT/backend" && .venv/bin/python -m pytest -q tests/test_levels.py tests/test_sam_overlay_display.py tests/test_demo_bundles.py 2>&1 | tail -1 | grep -q "passed"); then
-  pass "levels/trace + overlay + bundles" "test_levels/overlay_display/demo_bundles.py"
-else fail "levels/trace + overlay + bundles" "see pytest output"; fi
+run_row "levels/trace + overlay + bundles" bash -c "cd \"$ROOT/backend\" && .venv/bin/python -m pytest -q tests/test_levels.py tests/test_sam_overlay_display.py tests/test_demo_bundles.py"
 
-# -- full backend suite (must stay under 3 minutes) --
+# -- full backend suite (must stay under 3 minutes; exit code decides) --
 T0=$(date +%s)
-FULL_OUT=$(cd "$ROOT/backend" && .venv/bin/python -m pytest -q 2>&1 | tail -3)
-T1=$(date +%s)
-DT=$((T1 - T0))
-if echo "$FULL_OUT" | grep -qE "[0-9]+ passed"; then
-  if [ "$DT" -lt 180 ]; then pass "full backend suite <3min" "${DT}s: $(echo "$FULL_OUT" | tr '\n' ' ')";
+FULL_LOG=$(mktemp /tmp/mmc-sweep-full-XXXXXX.log)
+if (cd "$ROOT/backend" && .venv/bin/python -m pytest -q >"$FULL_LOG" 2>&1); then
+  T1=$(date +%s)
+  DT=$((T1 - T0))
+  if [ "$DT" -lt 180 ]; then pass "full backend suite <3min" "${DT}s: $(tail -1 "$FULL_LOG" | head -c 160)";
   else fail "full backend suite <3min" "${DT}s >= 180s"; fi
-else fail "full backend suite <3min" "$FULL_OUT"; fi
+else
+  fail "full backend suite <3min" "$(tail -3 "$FULL_LOG" | tr '\n' ' ' | head -c 300)"
+fi
+rm -f "$FULL_LOG"
 
-# -- bundles / replay --
-if "$ROOT/scripts/replay_check.sh" "$ROOT"/backend/tests/fixtures/sessions/*.mmrec >/dev/null 2>&1; then
-  pass "replay_check bundles verify" "replay_check.sh *.mmrec"
-else fail "replay_check bundles verify" "replay_check.sh"; fi
+# -- bundles / replay (exit codes decide) --
+run_row "replay_check bundles verify" "$ROOT/scripts/replay_check.sh" "$ROOT"/backend/tests/fixtures/sessions/*.mmrec
 
-if (cd "$ROOT" && backend/.venv/bin/python scripts/make_demo_bundle.py --check 2>&1 | grep -q "check OK"); then
-  pass "demo bundles byte-identical" "make_demo_bundle.py --check"
-else fail "demo bundles byte-identical" "make_demo_bundle.py --check"; fi
+run_row "demo bundles byte-identical" bash -c "cd \"$ROOT\" && backend/.venv/bin/python scripts/make_demo_bundle.py --check"
 
-# -- release dry run (CI-safe, no keystore) --
+# -- release dry run (CI-safe, no keystore; exit code decides) --
+# M7 review #13 requires the signing passwords even for --check, so the
+# sweep exports dummy values (no build runs, values never leave the shell).
 if touch /tmp/mmc-sweep-check.jks 2>/dev/null \
-  && MMC_KEYSTORE_PATH=/tmp/mmc-sweep-check.jks MMC_KEYSTORE_ALIAS=sweep "$ROOT/scripts/build_release_apk.sh" --check >/dev/null 2>&1; then
+  && MMC_KEYSTORE_PATH=/tmp/mmc-sweep-check.jks MMC_KEYSTORE_ALIAS=sweep \
+     MMC_KEYSTORE_PASSWORD=sweep-dummy MMC_KEY_PASSWORD=sweep-dummy \
+     "$ROOT/scripts/build_release_apk.sh" --check >/dev/null 2>&1; then
   pass "release script --check" "build_release_apk.sh --check"
 else fail "release script --check" "build_release_apk.sh --check"; fi
 rm -f /tmp/mmc-sweep-check.jks
 
-# -- web (offline) --
-if (cd "$ROOT/web" && npm ci --offline >/dev/null 2>&1 && npm run build >/dev/null 2>&1); then
-  pass "web build (tsc strict)" "npm ci --offline + npm run build"
-else fail "web build (tsc strict)" "npm ci --offline + npm run build"; fi
+# -- web (offline; exit code decides; run_row keeps the tails as evidence) --
+run_row "web build (tsc strict)" bash -c "cd \"$ROOT/web\" && npm ci --offline && npm run build"
 
-# -- android (offline, seeded gradle home) --
-if (cd "$ROOT/android" && GRADLE_USER_HOME=/tmp/mmc-gradle-home ./gradlew testDebugUnitTest assembleDebug --offline -q >/dev/null 2>&1); then
-  pass "android unit + assembleDebug" "gradlew testDebugUnitTest assembleDebug --offline"
-else fail "android unit + assembleDebug" "see gradle output"; fi
+# -- android (offline, seeded gradle home; exit code decides) --
+run_row "android unit + assembleDebug" bash -c "cd \"$ROOT/android\" && GRADLE_USER_HOME=/tmp/mmc-gradle-home ./gradlew testDebugUnitTest assembleDebug --offline"
 
 # -- owner / live rows (SKIP, never silently passed) --
 skip "real-Ford .mmrec + M4 recording" "owner: on-vehicle checklist docs/SAFETY.md"

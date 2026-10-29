@@ -40,6 +40,10 @@ import dev.dreamz.mmc.session.SessionClient
 import dev.dreamz.mmc.session.TransportKind
 import dev.dreamz.mmc.session.TransportOptions
 import dev.dreamz.mmc.voice.VoiceAudioSpec
+import dev.dreamz.mmc.voice.VoiceCommands
+import dev.dreamz.mmc.voice.VoiceConfirm
+import dev.dreamz.mmc.voice.VoiceIntent
+import dev.dreamz.mmc.voice.VoiceTalkSession
 import dev.dreamz.mmc.voice.VoiceUiState
 import okhttp3.WebSocket
 import org.json.JSONArray
@@ -144,9 +148,114 @@ class MmcController(context: Context, private val buildDefaultUrl: String) {
     // RECORD_AUDIO is requested only on first voice tap; spoken replies use
     // on-device TextToSpeech (Voice Transcribe has no TTS). Voice never
     // triggers clear-codes (no intent maps there).
+    // End to end: mic PCM -> /sessions/{id}/asr -> live captions -> parsed
+    // pending intent -> Confirm POSTs the real test-result route and reports
+    // the real outcome (or the real error — never a claimed success).
     val voiceUi = VoiceUiState()
     var voiceStatus by mutableStateOf("")
     var voiceMicRationale by mutableStateOf(VoiceAudioSpec.MIC_EXPLANATION)
+    var voiceRecording by mutableStateOf(false)
+    var voiceStagedTrims by mutableStateOf(mapOf<String, Double>())
+    private var voiceTalk: VoiceTalkSession? = null
+
+    /** Mic -> /asr -> captions. First tap explains the mic use, then asks. */
+    fun startVoiceTalk() {
+        val sid = sessionId ?: run {
+            voiceStatus = "Connect first — voice needs a session."
+            return
+        }
+        try {
+            voiceTalk?.close()
+        } catch (e: Exception) {
+            // Stale socket: fall through to the fresh turn.
+        }
+        voiceStatus = "Listening… say “next test” or “log 12.4 volts”."
+        voiceRecording = true
+        voiceTalk = VoiceTalkSession(baseUrl, sid, object : VoiceTalkSession.Events {
+            override fun onPartial(caption: String) {
+                main.post { voiceUi.onPartial(caption) }
+            }
+
+            override fun onFinal(caption: String) {
+                main.post { onVoiceFinal(caption) }
+            }
+
+            override fun onError(message: String) {
+                main.post {
+                    voiceRecording = false
+                    voiceStatus = "Voice error: $message"
+                }
+            }
+
+            override fun onClosed() {
+                main.post { voiceRecording = false }
+            }
+        }).also { it.start() }
+    }
+
+    /** Mic off; the socket stays open for the closing final. */
+    fun stopVoiceTalk() {
+        voiceRecording = false
+        voiceStatus = "Stopped — waiting for the final transcript."
+        bg { voiceTalk?.stopTalk() }
+    }
+
+    private fun onVoiceFinal(caption: String) {
+        val rankOne = rankOneTest()?.optString("kp_test_ref")?.takeIf { it.isNotEmpty() }
+            ?: "the top test"
+        voiceUi.onFinal(caption, rankOneTitle = rankOne)
+        val pending = voiceUi.pending
+        if (pending is VoiceIntent.LogTrim) {
+            voiceStagedTrims = VoiceConfirm.stageTrim(voiceStagedTrims, pending)
+        }
+        // A spoken "next test" advances to the rank-1 test card.
+        if (VoiceCommands.parse(caption) is VoiceIntent.NextTest) {
+            rankOneTest()?.optString("kp_test_ref")?.takeIf { it.isNotEmpty() }?.let { beginTest(it) }
+        }
+        voiceTalk?.close()
+        voiceRecording = false
+    }
+
+    /** Confirm the pending card through the real test-result route. */
+    fun confirmVoicePending() {
+        val pending = voiceUi.pending
+        val submission = VoiceConfirm.submissionFor(pending, voiceStagedTrims)
+        if (submission == null) {
+            voiceStatus = if (pending is VoiceIntent.LogTrim) {
+                "Say both the idle and the 2500 rpm trims first."
+            } else {
+                "Nothing confirmable — dictate a reading first."
+            }
+            return
+        }
+        val sid = sessionId ?: run {
+            voiceStatus = "Confirm failed: no session."
+            return
+        }
+        voiceStatus = "Confirming ${submission.testRef}…"
+        bg {
+            try {
+                val measured = JSONObject()
+                for ((k, v) in submission.measured) measured.put(k, v)
+                val resp = client().postTestResult(sid, submission.testRef, measured)
+                val outcome = resp.getJSONObject("test_result").optString("outcome")
+                main.post {
+                    voiceUi.clearPending()
+                    voiceStagedTrims = emptyMap()
+                    voiceStatus = "Logged ${submission.testRef}: $outcome."
+                }
+                postState(client().getState(sid))
+            } catch (e: Exception) {
+                // The pending card is kept: success is reported only on HTTP 200.
+                main.post { voiceStatus = "Confirm failed: ${e.message}" }
+            }
+        }
+    }
+
+    fun cancelVoicePending() {
+        voiceUi.clearPending()
+        voiceStatus = "Discarded."
+    }
 
     fun refreshBudget() {
         bg {
@@ -1092,15 +1201,23 @@ private fun LiveScreen(c: MmcController) {
 private fun VoicePanel(c: MmcController) {
     Text("Voice (Android-only hands-free)", style = MaterialTheme.typography.titleMedium)
     Text(c.voiceMicRationale)
+    // Mic permission is requested only when the user taps record (the
+    // rationale above shows first), mirroring the engine-sound card.
+    val permissionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) c.startVoiceTalk()
+        else c.voiceStatus = "Microphone permission is needed for voice commands."
+    }
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         Button(onClick = { c.voiceUi.setHandsFree(!c.voiceUi.handsFree) }) {
             Text(if (c.voiceUi.handsFree) "Hands-free: on" else "Hands-free: off")
         }
         Button(onClick = {
-            // Hold-to-talk capture streams PCM to /asr; the first tap also
-            // explains the mic use (permission prompt follows on device).
-            c.voiceStatus = "Listening… say “next test” or “log 12.4 volts”."
-        }) { Text("Hold to talk") }
+            if (c.voiceRecording) c.stopVoiceTalk()
+            else if (c.hasRecordPermission()) c.startVoiceTalk()
+            else permissionLauncher.launch(VoiceAudioSpec.PERMISSION)
+        }) { Text(if (c.voiceRecording) "Stop" else "Hold to talk") }
     }
     if (c.voiceUi.caption.isNotEmpty()) Text("Heard: ${c.voiceUi.caption}")
     if (c.voiceUi.lastSpoken.isNotEmpty()) Text("Spoken: ${c.voiceUi.lastSpoken}")
@@ -1108,15 +1225,11 @@ private fun VoicePanel(c: MmcController) {
     if (pending != null) {
         Text("Pending voice log: $pending")
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = {
-                // Confirm re-validates through the normal test-result route.
-                c.voiceUi.clearPending()
-                c.voiceStatus = "Confirmed — logged through the test route."
-            }) { Text("Confirm") }
-            Button(onClick = {
-                c.voiceUi.clearPending()
-                c.voiceStatus = "Discarded."
-            }) { Text("Cancel") }
+            // Confirm POSTs the real test-result route: success appears only
+            // on HTTP 200, errors report the real message, and the card is
+            // kept on failure (never a claimed success).
+            Button(onClick = { c.confirmVoicePending() }) { Text("Confirm") }
+            Button(onClick = { c.cancelVoicePending() }) { Text("Cancel") }
         }
     }
     if (c.voiceStatus.isNotEmpty()) Text(c.voiceStatus)

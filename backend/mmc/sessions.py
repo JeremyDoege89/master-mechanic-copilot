@@ -177,24 +177,30 @@ class SessionRegistry:
         (root / "sessions").mkdir(parents=True, exist_ok=True)
         (root / "reports").mkdir(parents=True, exist_ok=True)
         self._sessions: dict[str, Session] = {}
+        # M7 review #9: first-touch construction lock. Two concurrent
+        # first requests for one stored session must share a single
+        # EventStore (with one cached _next_seq/_head), not build two and
+        # interleave duplicate seqs onto the hash chain.
+        self._lock = threading.Lock()
 
     # -- lookup ------------------------------------------------------------
     def get(self, session_id: str) -> Session | None:
-        if session_id in self._sessions:
-            return self._sessions[session_id]
-        meta_path = self.root / "sessions" / session_id / "meta.json"
-        if not meta_path.exists():
-            # Multi-container miss: another container may have written this
-            # session since this container's volume view synced — reload
-            # once (volume.reload() on Modal) and re-check before 404.
-            refresh_store_from_volume()
+        with self._lock:
+            if session_id in self._sessions:
+                return self._sessions[session_id]
+            meta_path = self.root / "sessions" / session_id / "meta.json"
             if not meta_path.exists():
-                return None
-        meta = json.loads(meta_path.read_text(encoding="utf-8"))
-        store = EventStore(self.root / "sessions" / session_id / "events.jsonl")
-        session = Session(session_id, meta, store)
-        self._sessions[session_id] = session
-        return session
+                # Multi-container miss: another container may have written this
+                # session since this container's volume view synced — reload
+                # once (volume.reload() on Modal) and re-check before 404.
+                refresh_store_from_volume()
+                if not meta_path.exists():
+                    return None
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            store = EventStore(self.root / "sessions" / session_id / "events.jsonl")
+            session = Session(session_id, meta, store)
+            self._sessions[session_id] = session
+            return session
 
     # -- creation ----------------------------------------------------------
     def create(
@@ -522,6 +528,86 @@ def find_current_report_review(session: Session) -> dict | None:
         else:
             stored = None
     return stored
+
+
+# -- server-side blob ownership (M7 review #8) ----------------------------------
+# The download route serves only blobs the session itself produced or
+# uploaded. Ownership is recorded here at upload/vision/clear-codes time
+# (and restored on replay) — never from client-postable evidence payloads,
+# which any session can fabricate. Stored as a plain JSON digest list next
+# to the session log.
+_BLOB_INDEX_LOCK = threading.Lock()
+
+
+def _session_blobs_path(session_id: str) -> Path:
+    return data_root() / "sessions" / session_id / "blobs.json"
+
+
+def record_session_blob(session_id: str, sha: str) -> None:
+    """Record that this session produced/uploaded the blob ``sha``."""
+    digest = sha.lower()
+    path = _session_blobs_path(session_id)
+    with _BLOB_INDEX_LOCK:
+        owned: set[str] = set()
+        if path.exists():
+            try:
+                owned = set(json.loads(path.read_text(encoding="utf-8")))
+            except ValueError:
+                owned = set()
+        if digest not in owned:
+            owned.add(digest)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(sorted(owned)), encoding="utf-8")
+
+
+def session_owns_blob(session_id: str, sha: str) -> bool:
+    """True when the session itself produced/uploaded the blob ``sha``."""
+    path = _session_blobs_path(session_id)
+    with _BLOB_INDEX_LOCK:
+        if not path.exists():
+            return False
+        try:
+            owned = set(json.loads(path.read_text(encoding="utf-8")))
+        except ValueError:
+            return False
+    return sha.lower() in owned
+
+
+def find_recorded_wonder_review_if_current(session: Session) -> dict | None:
+    """Recorded demo review, served only while still current (M7 review #7).
+
+    Same currency rule as :func:`find_current_report_review`, applied to
+    the ``report_built``-embedded demo review: it is reused only when no
+    diagnostic event follows the ``report_built`` that recorded it (or,
+    equivalently, when the log head still matches that event's recorded
+    head). A newer event means the review describes a state that no
+    longer exists, and the build ships ``wonder_review`` null instead.
+    """
+    recorded: dict | None = None
+    recorded_head: str | None = None
+    diagnostic_after = True
+    for event in session.store.iter_replay():
+        if event.get("type") == "report_built":
+            review = (event.get("payload") or {}).get("wonder_review")
+            if isinstance(review, dict) and review:
+                recorded = review
+                recorded_head = (event.get("payload") or {}).get("log_head_hash")
+                diagnostic_after = False
+        else:
+            diagnostic_after = True
+    if recorded is None:
+        return None
+    if not diagnostic_after:
+        return recorded
+    # Newer events exist: serve only if the head still matches the
+    # recorded head (unreachable when events were appended, kept as the
+    # second half of the currency rule).
+    head: str | None = None
+    for event in session.store.iter_replay():
+        head = event.get("hash")
+    if recorded_head is not None and head == recorded_head:
+        return recorded
+    return None
 
 
 __all__ = ["blobs"]

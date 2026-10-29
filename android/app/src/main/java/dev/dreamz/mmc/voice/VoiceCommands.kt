@@ -30,7 +30,16 @@ object VoiceCommands {
         "fifteen" to 15.0, "sixteen" to 16.0, "seventeen" to 17.0,
         "eighteen" to 18.0, "nineteen" to 19.0, "twenty" to 20.0,
         "thirty" to 30.0, "forty" to 40.0, "fifty" to 50.0,
+        "sixty" to 60.0, "seventy" to 70.0, "eighty" to 80.0, "ninety" to 90.0,
     )
+
+    private val numberVocab: Set<String> =
+        numberWords.keys + setOf("point", "dot", "plus", "minus", "negative", "+", "-", "and")
+
+    /** M7 review #5: 2500-rpm condition tokens — never the measurement. */
+    private val rpmTokens = setOf("2500", "rpm", "rpms", "revved", "revs", "rev")
+
+    private val unitTokens = setOf("volt", "volts", "voltage", "v")
 
     fun normalize(text: String): String {
         val sb = StringBuilder()
@@ -41,17 +50,21 @@ object VoiceCommands {
         return sb.toString().split(Regex("\\s+")).filter { it.isNotEmpty() }.joinToString(" ")
     }
 
+    private fun numberTokens(tokens: List<String>): List<String> =
+        tokens.filter { it in numberVocab || it.toDoubleOrNull() != null }
+
     private fun numberFrom(tokens: List<String>): Double? {
-        val kept = tokens.filter { it in numberWords || it in setOf("point", "dot", "plus", "minus") || it.toDoubleOrNull() != null }
-        if (kept.isEmpty()) return null
-        kept.firstOrNull()?.toDoubleOrNull()?.let { if (kept.size == 1) return it }
+        if (tokens.isEmpty()) return null
+        for (tok in tokens) {
+            tok.toDoubleOrNull()?.let { return it }
+        }
         var sign = 1.0
-        var words = kept
-        if (words.first() == "plus") words = words.drop(1)
-        if (words.firstOrNull() == "minus") {
-            sign = -1.0
+        var words = tokens
+        if (words.first() in setOf("plus", "minus", "negative", "+", "-")) {
+            if (words.first() in setOf("minus", "negative", "-")) sign = -1.0
             words = words.drop(1)
         }
+        if (words.isEmpty()) return null
         val sep = words.indexOfFirst { it == "point" || it == "dot" }
         if (sep >= 0) {
             val intPart = wordsToInt(words.subList(0, sep)) ?: return null
@@ -65,6 +78,19 @@ object VoiceCommands {
             return sign * "${intPart.toInt()}.$frac".toDouble()
         }
         return wordsToInt(words)?.let { sign * it }
+    }
+
+    /** Number run immediately left of the last unit token (mirrors backend). */
+    private fun valueNearUnit(tokens: List<String>): Double? {
+        val unitAt = tokens.indexOfLast { it in unitTokens }
+        if (unitAt < 0) return null
+        val run = mutableListOf<String>()
+        for (i in unitAt - 1 downTo 0) {
+            val t = tokens[i]
+            if (t in numberVocab || t.toDoubleOrNull() != null) run.add(0, t) else break
+        }
+        if (run.isEmpty()) return null
+        return numberFrom(run)
     }
 
     private fun wordsToInt(words: List<String>): Double? {
@@ -109,11 +135,18 @@ object VoiceCommands {
                 "cruise" in tokens || "2500" in joined -> "cruise"
                 else -> null
             }
-            val value = numberFrom(tokens) ?: return VoiceIntent.Unknown(text)
+            // M7 review #5: drop the rpm-condition tokens before extraction.
+            val candidates = tokens.filter {
+                it !in setOf("log", "idle", "cruise", "trim", "trims") && it !in rpmTokens
+            }
+            val value = numberFrom(numberTokens(candidates)) ?: return VoiceIntent.Unknown(text)
             return VoiceIntent.LogTrim(part, value)
         }
         if (joined.contains("volt") && "log" in tokens) {
-            val value = numberFrom(tokens) ?: return VoiceIntent.Unknown(text)
+            // M7 review #5: prefer the number next to the unit.
+            val value = valueNearUnit(tokens)
+                ?: numberFrom(numberTokens(tokens.filter { it !in rpmTokens }))
+                ?: return VoiceIntent.Unknown(text)
             return VoiceIntent.LogVoltage(value, focusedTestRef ?: "battery_voltage_rest_running")
         }
         return VoiceIntent.Unknown(text)
@@ -134,6 +167,48 @@ object VoiceCommands {
         is VoiceIntent.Confirm -> "Confirmed."
         is VoiceIntent.Cancel -> "Discarded."
         is VoiceIntent.Unknown -> "Didn't catch that. Say next test, or log a reading."
+    }
+}
+
+/**
+ * Pure confirm-path helper (JVM-testable): pending intent -> test submission.
+ *
+ * The backend re-parses on confirm (single source of truth); this shapes the
+ * exact measured payload the app will POST to the test-result route, or null
+ * when more speech is needed (trim needs both idle and cruise halves).
+ */
+object VoiceConfirm {
+    data class Submission(val testRef: String, val measured: Map<String, Any>)
+
+    /** Fold a trim intent into staged halves (mirrors backend stage_trim). */
+    fun stageTrim(staged: Map<String, Double>, intent: VoiceIntent.LogTrim): Map<String, Double> {
+        val out = staged.toMutableMap()
+        when (intent.part) {
+            "idle" -> out["idle_trim_pct"] = intent.value
+            "cruise" -> out["cruise_trim_pct"] = intent.value
+            else -> if (!out.containsKey("idle_trim_pct")) out["idle_trim_pct"] = intent.value
+            else out["cruise_trim_pct"] = intent.value
+        }
+        return out
+    }
+
+    fun submissionFor(pending: VoiceIntent?, staged: Map<String, Double>): Submission? = when (pending) {
+        is VoiceIntent.LogVoltage -> Submission(
+            pending.testRef,
+            // Voice logging happens with the engine available on the Live
+            // screen; the pending card shows this assumption verbatim.
+            mapOf("voltage_v" to pending.volts, "engine_on" to true),
+        )
+        is VoiceIntent.LogTrim -> {
+            val idle = staged["idle_trim_pct"]
+            val cruise = staged["cruise_trim_pct"]
+            if (idle == null || cruise == null) null
+            else Submission(
+                "trim_idle_vs_2500",
+                mapOf("idle_trim_pct" to idle, "cruise_trim_pct" to cruise),
+            )
+        }
+        else -> null
     }
 }
 
