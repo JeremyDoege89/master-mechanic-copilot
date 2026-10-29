@@ -1,0 +1,20 @@
+Bugs seen on the live Modal site (driven with headless Chrome after the last deploy):
+1. Mid-replay the web app got `GET /sessions/<id>/state?upto_seq=46 -> 404 {"detail":"unknown session"}` and ~24 other
+   404s. `modal container list` shows TWO containers for app mmc: sessions live in one container's memory/volume view,
+   and requests landing on the other container 404. Fix in modal_app.py: serve from a single container that handles
+   concurrent requests (Modal 1.6.3: `max_containers=1` on @app.function plus `@modal.concurrent(max_inputs=...)`),
+   keep one warm (`min_containers=1`, `scaledown_window` reasonable) for the judging period, and make a session/report
+   lookup miss fall back to reading the volume (volume.reload()) before 404. Extend the offline stub test to assert
+   these settings.
+2. Report tab auto-opens report id bb5539d4... but `GET /reports/<id>.json -> 404 unknown report`: replaying a bundle
+   restores the report_built event but not the report file it names. On replay, rebuild the report deterministically
+   from the replayed state into that same id (Wonder review reused from the event, $0), or have the web call the
+   report-build route which reuses it; the report must load in one click. Test with the vacuum-leak bundle.
+3. modal_app.seed_fixtures copies a bundle only if the file doesn't exist on the volume, so updated bundles never reach
+   the live site. Copy when the sha256 differs. Test it.
+4. Number formatting in human labels: "Fuel trims: +18% at idle, +4.244416662221763% at 2,500 rpm". Round percentages
+   to 1 decimal, volts to 2, everything human-facing.
+5. The next-test column is very long: collapse each card's safety checklist and expected outcomes by default
+   (expand on click; the checklist still has to be completed before a live run, unchanged).
+Run the backend suite (< 3 min), make_demo_bundle.py --check, replay_check and the web build until green. Do not commit.
+Foreground only. Finish with files changed and test counts.

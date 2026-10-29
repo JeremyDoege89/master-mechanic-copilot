@@ -63,6 +63,32 @@ def test_modal_objects_target_cli_1_6_api():
     assert module.MODAL_ENV["MMC_PUBLIC_LIVE_BUDGET_USD"] == "0"
     assert module.MODAL_ENV["REPLAY_USE_CACHED_LLM"] == "true"
     assert module.MODAL_ENV["DATA_DIR"] == "/data"
+    # Live bug §1: one container serves everything (sessions live in one
+    # container's memory/volume view), concurrent inputs keep polling fast,
+    # one container stays warm through judging.
+    fn_kwargs: dict = {}
+    for c in stub.mock_calls:
+        name = c[0] if len(c) > 0 else ""
+        if str(name).endswith("function"):
+            kw = c[2] if len(c) > 2 else {}
+            if "volumes" in kw or "image" in kw:
+                fn_kwargs = dict(kw)
+    assert fn_kwargs, "expected an @app.function serving definition"
+    assert fn_kwargs.get("max_containers") == 1, fn_kwargs
+    assert fn_kwargs.get("min_containers") == 1, fn_kwargs
+    assert fn_kwargs.get("scaledown_window"), f"scaledown_window keeps one warm: {fn_kwargs}"
+    conc_kwargs: dict | None = None
+    for c in stub.mock_calls:
+        name = c[0] if len(c) > 0 else ""
+        if "concurrent" in str(name):
+            kw = dict(c[2]) if len(c) > 2 else {}
+            # The stub also records the decorator application
+            # (concurrent(...)(fn), args-only): want the settings call.
+            if "max_inputs" in kw:
+                conc_kwargs = kw
+                break
+    assert conc_kwargs is not None, "expected @modal.concurrent for concurrent inputs"
+    assert conc_kwargs.get("max_inputs"), f"concurrent must set max_inputs: {conc_kwargs}"
 
 
 def test_create_app_serves_api_and_web_offline(tmp_path, monkeypatch):
@@ -105,6 +131,9 @@ def test_create_app_serves_api_and_web_offline(tmp_path, monkeypatch):
             assert '<div id="root">' in web.text
             assert "/assets/" in web.text
     finally:
+        from mmc import sessions as sess_mod
+
+        sess_mod.register_store_refresh(None)
         for key, value in saved_env.items():
             if value is None:
                 os.environ.pop(key, None)
@@ -206,6 +235,9 @@ def test_copied_modal_app_resolves_repo_from_env(tmp_path, monkeypatch):
             assert as_pdf.status_code == 200, as_pdf.text[:200]
             assert as_pdf.content.startswith(b"%PDF")
     finally:
+        from mmc import sessions as sess_mod
+
+        sess_mod.register_store_refresh(None)
         for key, value in saved_env.items():
             if value is None:
                 os.environ.pop(key, None)
@@ -278,3 +310,126 @@ def test_site_packages_copy_reads_schemas_from_repo_root_env(tmp_path):
         timeout=120,
     )
     assert "schemas-ok" in proc.stdout, proc.stderr[-3000:]
+
+
+def test_seed_fixtures_replaces_stale_bundle(tmp_path):
+    """Live bug §3: a volume copy whose sha256 differs gets recopied."""
+    import hashlib
+
+    module, _stub = _load_modal_app()
+    src = (
+        module._resolve_repo_root() / "backend" / module.BUNDLED_FIXTURES / "sim-healthy.mmrec"
+    )
+    assert src.is_file(), f"fixture missing: {src}"
+    dest = tmp_path / "fixtures" / "sessions"
+    dest.mkdir(parents=True)
+    stale = dest / "sim-healthy.mmrec"
+    stale.write_bytes(b"stale-bundle-bytes")
+    module.seed_fixtures(str(tmp_path))
+    assert stale.read_bytes() == src.read_bytes()
+    assert hashlib.sha256(stale.read_bytes()).hexdigest() == hashlib.sha256(
+        src.read_bytes()
+    ).hexdigest()
+    # Identical bytes are left alone (no rewrite churn on every boot).
+    mtime = stale.stat().st_mtime_ns
+    module.seed_fixtures(str(tmp_path))
+    assert stale.stat().st_mtime_ns == mtime
+
+
+def test_create_app_registers_volume_reload_hook(tmp_path, monkeypatch):
+    """Live bug §1: create_app wires volume.reload() behind lookup misses."""
+    import os
+
+    module, _stub = _load_modal_app()
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("MMC_VIN_KEY", raising=False)
+    monkeypatch.delenv("MODEL_API_KEY", raising=False)
+    monkeypatch.delenv("BASETEN_API_KEY", raising=False)
+    for key in ("MMC_PUBLIC_MODE", "MMC_PUBLIC_LIVE_BUDGET_USD"):
+        monkeypatch.delenv(key, raising=False)
+
+    from mmc import sessions as sess_mod
+    from mmc.main import app as shared_app
+
+    saved_env = {key: os.environ.get(key) for key in module.MODAL_ENV}
+    saved_routes = len(shared_app.routes)
+    saved_mounted = getattr(shared_app, "_mmc_web_mounted", False)
+    sess_mod.register_store_refresh(None)
+    try:
+        module.create_app()
+        assert sess_mod._STORE_REFRESH_HOOK is not None
+        # The stub `modal` volume's reload() is a no-op: must never raise.
+        sess_mod.refresh_store_from_volume()
+    finally:
+        sess_mod.register_store_refresh(None)
+        for key, value in saved_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        del shared_app.routes[saved_routes:]
+        if not saved_mounted and hasattr(shared_app, "_mmc_web_mounted"):
+            delattr(shared_app, "_mmc_web_mounted")
+
+
+def test_session_lookup_miss_reloads_volume_before_404(tmp_path, monkeypatch):
+    """Live bug §1: a disk miss reloads the volume view once before giving up."""
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    from mmc import sessions as sess_mod
+
+    registry = sess_mod.get_registry()
+    session = registry.create(user_level="L1", tools=[], mode="sim", vehicle=None)
+    sid = session.id
+    # Simulate a stale volume view: the session dir is hidden from disk
+    # and from the in-memory cache until the "reload" restores it.
+    registry._sessions.pop(sid, None)
+    src = tmp_path / "sessions" / sid
+    hidden = tmp_path / f".hidden-{sid}"
+    src.rename(hidden)
+    calls: list[str] = []
+
+    def fake_reload() -> None:
+        calls.append("reload")
+        hidden.rename(src)
+
+    sess_mod.register_store_refresh(fake_reload)
+    try:
+        assert registry.get(sid) is not None
+        assert calls == ["reload"]
+        # A genuinely unknown id still misses (after exactly one reload).
+        assert registry.get("does-not-exist") is None
+        assert calls == ["reload", "reload"]
+    finally:
+        sess_mod.register_store_refresh(None)
+
+
+def test_report_lookup_miss_reloads_volume_before_404(tmp_path, monkeypatch):
+    """Live bug §1: same reload-before-404 for the report file lookup."""
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    from mmc import sessions as sess_mod
+
+    registry = sess_mod.get_registry()
+    session = registry.create(user_level="L1", tools=[], mode="sim", vehicle=None)
+    state = sess_mod.compute_state(session)
+    report = sess_mod.build_report(session, state)
+    sess_mod.save_report(registry, report)
+    rid = report["report_id"]
+    path = tmp_path / "reports" / f"{rid}.json"
+    assert path.is_file()
+    hidden = tmp_path / f".hidden-{rid}.json"
+    path.rename(hidden)
+    calls: list[str] = []
+
+    def fake_reload() -> None:
+        calls.append("reload")
+        if hidden.exists():
+            hidden.rename(path)
+
+    sess_mod.register_store_refresh(fake_reload)
+    try:
+        loaded = sess_mod.load_report(registry, rid)
+        assert loaded is not None and loaded["report_id"] == rid
+        assert calls == ["reload"]
+        assert sess_mod.load_report(registry, "does-not-exist") is None
+    finally:
+        sess_mod.register_store_refresh(None)

@@ -95,6 +95,43 @@ def fold_rows(session: sess.Session, rows: list[dict]) -> int:
     return folded
 
 
+def restore_reports(session: sess.Session) -> list[str]:
+    """Rebuild recorded reports into this session's report dir ($0).
+
+    Bundles carry the ``report_built`` event (with its ``report_id`` and the
+    recorded Wonder review) but not the report file it names — so the Report
+    tab's one-click ``GET /reports/<id>.json`` 404s after a replay. For
+    every recorded ``report_built`` without a stored file, rebuild the
+    report deterministically from the replayed state under that SAME id
+    (the Wonder review is reused verbatim from the event, $0: no live
+    call). Writes files only; the event log is untouched, so replayed
+    posteriors stay bit-identical.
+    """
+    registry = sess.get_registry()
+    restored: list[str] = []
+    seen: set[str] = set()
+    for event in session.store.iter_replay():
+        if event.get("type") != "report_built":
+            continue
+        payload = event.get("payload") or {}
+        report_id = payload.get("report_id")
+        if not isinstance(report_id, str) or not report_id or report_id in seen:
+            continue
+        seen.add(report_id)
+        if sess.load_report(registry, report_id) is not None:
+            continue
+        state = sess.compute_state(session)
+        report = sess.build_report(session, state)
+        report["report_id"] = report_id
+        recorded_review = payload.get("wonder_review")
+        if isinstance(recorded_review, dict):
+            report["wonder_review"] = recorded_review
+            report["wonder_unavailable"] = payload.get("wonder_unavailable")
+        sess.save_report(registry, report)
+        restored.append(report_id)
+    return restored
+
+
 def replay_bundle_bytes(
     data: bytes,
     *,
@@ -141,6 +178,7 @@ def replay_bundle_bytes(
         user_level=user_level, tools=list(tools), mode="replay", vehicle=vehicle
     )
     fold_rows(session, rows)
+    restore_reports(session)
     return session
 
 
@@ -163,6 +201,7 @@ def replay_session(source_id: str) -> sess.Session:
         {"type": e["type"], "payload": e["payload"]} for e in source.store.iter_replay()
     ]
     fold_rows(session, rows)
+    restore_reports(session)
     return session
 
 

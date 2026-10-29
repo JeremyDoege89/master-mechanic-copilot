@@ -475,7 +475,7 @@ export default function Replay({ autoJudge, onReport, onLatestReport }: Props) {
                       </small>
                     </p>
                     {t.safety_gate !== "none" && t.gate_checklist ? (
-                      <details open>
+                      <details>
                         <summary>Safety checklist: {t.gate_checklist.title}</summary>
                         <ul>
                           {t.gate_checklist.items.map((item) => (

@@ -267,6 +267,42 @@ def test_report_reuses_recorded_wonder_review(client_no_keys):
     assert body["wonder_unavailable"] is None
 
 
+def test_replay_restores_recorded_report_id(client_no_keys):
+    """Live bug §2: replaying a bundle serves its recorded report id in one click.
+
+    The bundle carries the ``report_built`` event (id bb5539d4...) but no
+    report file, so ``GET /reports/<id>.json`` 404s after a replay. Replay
+    rebuilds the report deterministically under that SAME id with the
+    recorded Wonder review ($0 — keyless here proves no live call).
+    """
+    from mmc.replay import mmrec, runner
+
+    data = (SESSIONS_OUT / "sim-vacuum-leak.mmrec").read_bytes()
+    members = mmrec.loads(data)
+    mmrec.verify_members(members, "sim-vacuum-leak.mmrec")
+    assert not any(n == "reports" or n.startswith("reports/") for n in members), (
+        "bundle ships no report file (that is the bug shape)"
+    )
+    rows = mmrec.event_rows(members)
+    recorded = [r for r in rows if r.get("type") == "report_built"][-1]
+    report_id = recorded["payload"]["report_id"]
+    assert report_id.startswith("bb5539d4"), report_id
+
+    session = runner.replay_bundle_bytes(data, label="test")
+    assert session.store.verify_chain()
+
+    got = client_no_keys.get(f"/reports/{report_id}.json")
+    assert got.status_code == 200, got.text[:300]
+    report = got.json()
+    assert report["report_id"] == report_id
+    assert report["session_id"] == session.id
+    assert report["wonder_review"] == recorded["payload"]["wonder_review"]
+    assert report["wonder_review"] is not None
+    assert report["wonder_unavailable"] is None
+    html = client_no_keys.get(f"/reports/{report_id}.html")
+    assert html.status_code == 200, html.text[:300]
+
+
 # -- full bundle tests (skip until the owner records the demo cache) --------
 
 BUNDLES = {

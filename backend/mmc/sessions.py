@@ -37,6 +37,32 @@ from mmc import vin as vin_mod
 LEVELS = ("L1", "L2", "L3")
 MODES = ("live", "sim", "replay", "upload")
 
+# -- shared-volume refresh -----------------------------------------------------
+# On Modal, sessions/reports live on the shared ``mmc-data`` volume. A fresh
+# (or second) container's view of that volume can be stale: another
+# container's sessions then 404 until the volume view is reloaded. Register
+# the platform reload callable (``volume.reload()`` on Modal) and every
+# disk-miss lookup below refreshes once before giving up. Locally no hook
+# is registered and lookups behave exactly as before.
+_STORE_REFRESH_HOOK = None
+
+
+def register_store_refresh(fn) -> None:
+    """Register the shared-volume reload callable (or None to clear)."""
+    global _STORE_REFRESH_HOOK
+    _STORE_REFRESH_HOOK = fn
+
+
+def refresh_store_from_volume() -> None:
+    """Reload the shared volume view; never raises (a failed reload just misses)."""
+    hook = _STORE_REFRESH_HOOK
+    if hook is None:
+        return
+    try:
+        hook()
+    except Exception:
+        pass
+
 # -- second-opinion views (M5O §2) -------------------------------------------
 # Async corroboration results keyed by session then evidence id. Display-only:
 # compute_state folds only test_result events, so posteriors are bit-identical
@@ -158,7 +184,12 @@ class SessionRegistry:
             return self._sessions[session_id]
         meta_path = self.root / "sessions" / session_id / "meta.json"
         if not meta_path.exists():
-            return None
+            # Multi-container miss: another container may have written this
+            # session since this container's volume view synced — reload
+            # once (volume.reload() on Modal) and re-check before 404.
+            refresh_store_from_volume()
+            if not meta_path.exists():
+                return None
         meta = json.loads(meta_path.read_text(encoding="utf-8"))
         store = EventStore(self.root / "sessions" / session_id / "events.jsonl")
         session = Session(session_id, meta, store)
@@ -444,7 +475,11 @@ def save_report(registry: SessionRegistry, report: dict) -> Path:
 def load_report(registry: SessionRegistry, report_id: str) -> dict | None:
     path = registry.root / "reports" / f"{report_id}.json"
     if not path.exists():
-        return None
+        # Same multi-container miss as SessionRegistry.get: reload the
+        # volume view once and re-check before reporting "unknown report".
+        refresh_store_from_volume()
+        if not path.exists():
+            return None
     return json.loads(path.read_text(encoding="utf-8"))
 
 

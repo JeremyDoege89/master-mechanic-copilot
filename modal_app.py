@@ -118,15 +118,26 @@ def startup_check(data_dir: str) -> dict:
     }
 
 
+def _sha256_file(path: Path) -> str:
+    import hashlib
+
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
 def seed_fixtures(data_dir: str) -> list[str]:
-    """Seed bundled .mmrec fixtures into the volume on first boot."""
+    """Seed bundled .mmrec fixtures into the volume.
+
+    Copies a bundle when it is missing OR its sha256 differs, so updated
+    bundles actually reach the live site (the old exists-check stranded
+    stale bundles on the volume forever).
+    """
     src = _resolve_repo_root() / "backend" / BUNDLED_FIXTURES
     dest = Path(data_dir) / "fixtures" / "sessions"
     dest.mkdir(parents=True, exist_ok=True)
     seeded = []
     for bundle in sorted(src.glob("*.mmrec")):
         target = dest / bundle.name
-        if not target.exists():
+        if not target.exists() or _sha256_file(target) != _sha256_file(bundle):
             shutil.copyfile(bundle, target)
         seeded.append(bundle.name)
     return seeded
@@ -146,12 +157,23 @@ def create_app(web_dist: Path | None = None):
         sys.path.insert(0, backend_dir)
 
     from mmc import public as public_mod
+    from mmc import sessions as sess_mod
     from mmc.main import app as backend_app
 
     public_mod.enforce_public_defaults()
     data_dir = os.environ.get("DATA_DIR", "/data")
     startup_check(data_dir)
     seed_fixtures(data_dir)
+    # Multi-container 404 fix (§1): a session/report lookup miss reloads
+    # the shared volume view once before 404, so requests that land on a
+    # container whose view predates another container's writes still find
+    # them. With max_containers=1 this covers restarts/redeploys too.
+    # The closure reads the module-global `volume` lazily so the offline
+    # stub (tests import this file with a stub `modal`) stays harmless.
+    def _reload_volume() -> None:
+        volume.reload()  # type: ignore[attr-defined]
+
+    sess_mod.register_store_refresh(_reload_volume)
 
     # The built web app ships at <repo>/web/dist (built during image
     # construction); on Modal that is /opt/mmc/web/dist.
@@ -193,6 +215,10 @@ volume = modal.Volume.from_name("mmc-data", create_if_missing=True)
 secrets = [modal.Secret.from_name("mmc-secrets")]
 
 
+# Single container, concurrent inputs: every request lands on the same
+# container (sessions live in its memory/volume view — no more 404s from a
+# second container), while concurrent inputs keep mid-replay polling fast.
+# One warm container through the judging period (scaledown_window holds it).
 @app.function(
     image=image,
     volumes={"/data": volume},
@@ -200,7 +226,11 @@ secrets = [modal.Secret.from_name("mmc-secrets")]
     env=MODAL_ENV,
     timeout=600,
     memory=1024,
+    max_containers=1,
+    min_containers=1,
+    scaledown_window=300,
 )
+@modal.concurrent(max_inputs=32)
 @modal.asgi_app()
 def fastapi_app():
     return create_app()

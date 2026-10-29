@@ -49,9 +49,37 @@ function pct(v: number): string {
   return `${Math.round(v * 100)}%`;
 }
 
+/** Round to 1 decimal, trimming a trailing ".0" (18 -> "18", 4.24 -> "4.2"). */
+function rounded1(v: number): string {
+  const r = Math.round(v * 10) / 10;
+  return Number.isInteger(r) ? String(r) : r.toFixed(1);
+}
+
 function signedPct(v: number): string {
-  const s = v > 0 ? "+" : "";
-  return `${s}${v}%`;
+  // Snap tiny values to zero so "-0%" never renders.
+  const clean = Math.abs(v) < 0.05 ? 0 : v;
+  return `${clean > 0 ? "+" : ""}${rounded1(clean)}%`;
+}
+
+/** Volts to 2 decimals (14.75 V, never 14.7500000001 V). */
+function fmtVolts(v: number): string {
+  return (Math.round(v * 100) / 100).toFixed(2);
+}
+
+/** Generic human-facing number: round to 2 decimals, trim trailing zeros. */
+function fmtNum(v: number): string {
+  return String(Math.round(v * 100) / 100);
+}
+
+/** Book range for a label: volts to 2 decimals, other units rounded short. */
+function fmtRange(min: unknown, max: unknown, units?: string): string {
+  const u = (units ?? "").trim();
+  const isVolts = /^[vV](olts?)?$/.test(u);
+  const f = (x: unknown): string => {
+    if (typeof x !== "number" || !Number.isFinite(x)) return String(x ?? "");
+    return isVolts ? fmtVolts(x) : fmtNum(x);
+  };
+  return `${f(min)}–${f(max)} ${u}`.trim();
 }
 
 /** Plain-language headline + optional detail for one timeline event. */
@@ -110,7 +138,7 @@ export function describeEvent(
         const extra = ranges.length > 1 ? ` + ${ranges.length - 1} more` : "";
         if (first) {
           return {
-            headline: `Shop manual: ${prettyRef(first.parameter ?? "spec")} ${first.min}–${first.max} ${first.units ?? ""}${extra}`.trim(),
+            headline: `Shop manual: ${prettyRef(first.parameter ?? "spec")} ${fmtRange(first.min, first.max, first.units)}${extra}`.trim(),
           };
         }
         return { headline: "Shop manual page saved" };
@@ -234,9 +262,9 @@ function describeTestResult(ref: string, p: Record<string, unknown>): string {
     if (v !== null) {
       const book =
         typeof expected.min === "number" && typeof expected.max === "number"
-          ? ` (book ${expected.min}–${expected.max} V)`
+          ? ` (book ${fmtVolts(expected.min)}–${fmtVolts(expected.max)} V)`
           : "";
-      return `Battery: ${v} V running${book} → ${prettyRef(outcome) || "read"}`;
+      return `Battery: ${fmtVolts(v)} V running${book} → ${prettyRef(outcome) || "read"}`;
     }
   }
   if (ref === "engine_sound_screen") {
