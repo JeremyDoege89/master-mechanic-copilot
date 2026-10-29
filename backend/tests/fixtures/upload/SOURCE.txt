@@ -1,0 +1,28 @@
+M5U upload fixtures — provenance (all self-generated, no service-manual pages).
+
+- upload_spec_test.pdf: written by write_spec_test_pdf() in
+  scripts/spike_meta_upload.py (stdlib minimal-PDF writer, deterministic
+  bytes). Regenerate: backend/.venv/bin/python -c
+  "import sys; sys.path.insert(0,'scripts'); from spike_meta_upload import
+  write_spec_test_pdf; from pathlib import Path;
+  write_spec_test_pdf(Path('backend/tests/fixtures/upload/upload_spec_test.pdf'))"
+  sha256 7ccf17031f29a00ac77e33977d3f8979e3a409691225abfedc414f98188892e1.
+- Test video clip (NOT committed; >1 MB rule): build live with
+  ffmpeg -loop 1 -i backend/tests/fixtures/images/engine_bay_02.jpg -t 3
+  -c:v libx264 -pix_fmt yuv420p /tmp/mmc-spike-clip.mp4
+  (shape-checking only for the spike; no fixture needed).
+- torque_vacuum_leak.csv / car_scanner_healthy.csv /
+  forscan_ect_stuck_open.csv (+ .expected.json each): hand-written in this
+  repo from the M3 sim scenario numbers (backend/tests/fixtures/
+  sim_scenarios.py); no device data.
+- spark_pdf_spec_01.json / spark_video_events_01.json /
+  sam_video_upload_01.jsonl: LIVE (owner run scripts/spike_meta_upload.py
+  2026-10-29, outside the sandbox). The JSON records carry
+  "provisional": false + "captured": "spike_meta_upload.py owner run"; the
+  .jsonl holds the live SAM video stream (75 masks, usage
+  video_frames_processed=75). PDF: 3 ranges (fuel_pressure_kpa 280-420 kPa,
+  charging_voltage_v 13.5-14.8 V, ect_warm_plateau_degc 90-98 degC). Video
+  events: 1 event ([0.0-2.36s] hood open showing engine bay,
+  sam_concept hood). SAM video: BOTH inline input_file and Files API
+  file_id parts accepted (75 masks each); sam.track_video defaults to
+  video_source="inline" (no extra upload round-trip), file_id kept as option.

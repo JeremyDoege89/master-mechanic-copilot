@@ -1,0 +1,22 @@
+I ran scripts/spike_meta_upload.py live. Every call succeeded:
+- Files API PDF upload -> Spark spec extraction: 3 ranges (fuel_pressure_kpa 280-420 kPa, charging_voltage_v 13.5-14.8 V,
+  ect_warm_plateau_degc 90-98 degC). Spark video events on the Files-API MP4: 1 event. SAM video worked with BOTH the
+  inline input_file part and the Files API file_id part (75 masks each). Fixtures were rewritten by the spike.
+- SAM video usage reports `video_frames_processed: 75` (no tokens). The ledger logged $0.010000 for it, but 75 frames at
+  $0.20/1k frames is $0.015. Find and fix the cost bug (the 50-frame minimum should be max(50, frames), not a cap), with a test.
+
+Do these, then stop:
+1. Reconcile M5U with the live run: flip the three upload fixtures to live (not provisional), make sure tests replay
+   them, default sam.track_video to video_source="inline" (no extra upload round-trip) and keep file_id as an option,
+   record the verified Files API / video shapes in the DECISIONS M5U entry.
+2. Model quality. Credits are plentiful now, so the models should do their best work. Verified live: the Responses API
+   accepts `reasoning={"effort": ...}` (low|medium|high|xhigh) on muse-spark-1.3 and muse-wonder-1.0; today no call sets it.
+   Add per-call-kind effort from env with these defaults and put them in .env.example:
+     EFFORT_SPARK_LIVE=medium      # live keyframe "what am I looking at" (keyframe->labels target < 3 s)
+     EFFORT_SPARK_EXTRACT=high     # PDF spec tables, video events, instrument reading
+     EFFORT_SPARK_AGENT=high       # orchestration / explanations
+     EFFORT_WONDER=xhigh           # report review (one call per report)
+   The effort must be part of the request hash used by the response cache and appear in the llm_call event's request
+   record, so replays stay deterministic. Log it in docs/DECISIONS.md.
+Run the backend suite (.venv/bin/python -m pytest -q), replay_check, and the Android build (offline, seeded
+GRADLE_USER_HOME) until green. Do not commit. Finish with files changed, test counts and pass/fail.

@@ -45,10 +45,14 @@ upload, voice hands-free, Muse Wonder report review, L1–L3 UX, web Replay + Re
   voice → SAM video → PDF upload. Never cut: simulator, replay, event log + hash chain, report, explanation trace,
   safety gates, allowlist.
 
-- **Sponsor credits (Oct 28): Modal and Baseten.** Modal hosts the backend + web Replay/Report for judging (compute only,
-  no rules question). Baseten serves a Meta **open-weight** model as a text-only fallback (narration and explanations,
-  never probabilities) when the Meta API budget guard trips or the API is down. It's a stretch after M7, and only Meta
-  open weights, so every AI call stays a Meta model.
+- **Sponsor credits (Oct 28): Modal and Baseten.** Modal hosts the backend + web Replay/Report for judging (compute only).
+  Baseten gives $100 and up to 2M tokens/min on **Muse Spark Open** (Meta's open-weight model) for this hackathon:
+  OpenAI-compatible Chat Completions at `https://inference.baseten.co/v1`, model exactly
+  `meta-models/muse-spark-open-1026` (the key works with nothing else), always reasons, takes images and audio.
+  Uses, all text/observations only (never probabilities): (1) **engine-sound evidence**: a short audio clip becomes
+  typed observations (misfire tick, belt squeal, vacuum hiss, knock), something Spark 1.3's audio support doesn't cover;
+  (2) fallback narration when the Meta budget guard trips or the API is down; (3) the "open weights" part of the
+  Meta-tooling story. Stretch after M7, spike earlier because it's cheap.
 
 ## Sleep and safety rules for the push
 

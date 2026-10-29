@@ -83,6 +83,50 @@ class SessionClient(baseUrl: String) {
         return post("/sessions/$sessionId/tests/$testRef/result", body)
     }
 
+    /** Build (don't send) the M5U upload multipart request — pure, unit-tested. */
+    fun buildUploadRequest(
+        sessionId: String,
+        filename: String,
+        bytes: ByteArray,
+        mime: String,
+        kind: String,
+    ): Request {
+        val multipart = MultipartBody.Builder()
+            .setType(MultipartBody.FORM)
+            .addFormDataPart("file", filename, bytes.toRequestBody(mime.toMediaType()))
+            .addFormDataPart("kind", kind)
+            .build()
+        return Request.Builder().url("$base/sessions/$sessionId/uploads").post(multipart).build()
+    }
+
+    private fun execute(request: Request, what: String): JSONObject {
+        http.newCall(request).execute().use { resp ->
+            val text = resp.body?.string().orEmpty()
+            if (!resp.isSuccessful) error("$what -> ${resp.code}: $text")
+            return JSONObject(text)
+        }
+    }
+
+    /** M5U upload: manual/scan PDF, CSV log, photo or video. Returns
+     * {blob_ref, sha256, evidence_id, kind}. Photos continue into the
+     * existing vision/keyframe confirm flow. */
+    fun uploadFile(
+        sessionId: String,
+        filename: String,
+        bytes: ByteArray,
+        mime: String,
+        kind: String,
+    ): JSONObject = execute(buildUploadRequest(sessionId, filename, bytes, mime, kind), "POST uploads")
+
+    fun extractPdf(sessionId: String, blobRef: String): JSONObject =
+        post("/sessions/$sessionId/uploads/pdf/extract", JSONObject().put("blob_ref", blobRef))
+
+    fun parseCsv(sessionId: String, blobRef: String): JSONObject =
+        post("/sessions/$sessionId/uploads/csv/parse", JSONObject().put("blob_ref", blobRef))
+
+    fun analyzeVideo(sessionId: String, blobRef: String): JSONObject =
+        post("/sessions/$sessionId/uploads/video/analyze", JSONObject().put("blob_ref", blobRef))
+
     /** Upload a recorded .mmrec through store/blobs.py; returns the blob_ref. */
     fun uploadMmrec(sessionId: String, file: File): String {
         val multipart = MultipartBody.Builder()

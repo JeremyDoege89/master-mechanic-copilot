@@ -44,7 +44,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 
-enum class Screen { SETTINGS, TRANSPORT, LIVE, TEST, REPORT }
+enum class Screen { SETTINGS, TRANSPORT, LIVE, TEST, REPORT, UPLOAD }
 
 /** Exact-bytes recording wrapper so the .mmrec transcript is the real exchange. */
 private class RecordingTransport(private val inner: Transport, private val rec: Recorder) : Transport {
@@ -94,7 +94,7 @@ fun obdTestSummary(ref: String): String = when (ref) {
 
 /** M4 gate-flow controller: settings → transport → live → test → report. */
 class MmcController(context: Context, private val buildDefaultUrl: String) {
-    private val appCtx = context.applicationContext
+    val appCtx = context.applicationContext
     private val prefs = appCtx.getSharedPreferences(BackendUrls.PREFS, Context.MODE_PRIVATE)
     private val main = Handler(Looper.getMainLooper())
 
@@ -578,6 +578,54 @@ class MmcController(context: Context, private val buildDefaultUrl: String) {
         }
     }
 
+    // -- M5U upload mode (no new permissions: system picker only) --------
+
+    var uploadText by mutableStateOf("")
+
+    /** New backend session in upload mode (manual pages / CSV / photo / video). */
+    fun createUploadSession() {
+        bg {
+            val sid = client().createSession(userLevel, tools.toList(), "upload")
+            main.post {
+                sessionId = sid
+                uploadText = ""
+                status = "Upload session ready."
+            }
+            postState(client().getState(sid))
+        }
+    }
+
+    /** Upload picked bytes, then run the per-kind backend step. Photos stop
+     * after the blob upload and continue in the keyframe confirm flow. */
+    fun uploadPicked(filename: String, bytes: ByteArray, mime: String, kind: String) {
+        val sid = sessionId ?: run {
+            status = "Create an upload session first."
+            return
+        }
+        uploadText = "Uploading $filename…"
+        bg {
+            try {
+                val c = client()
+                val up = c.uploadFile(sid, filename, bytes, mime, kind)
+                val blob = up.getString("blob_ref")
+                val out = when (kind) {
+                    "manual_pdf", "scan_pdf" -> c.extractPdf(sid, blob)
+                    "csv" -> c.parseCsv(sid, blob)
+                    "video" -> c.analyzeVideo(sid, blob)
+                    else -> JSONObject().put("blob_ref", blob)
+                        .put("note", "Photo stored — continue in the keyframe confirm flow.")
+                }
+                main.post { uploadText = out.toString(2) }
+                postState(c.getState(sid))
+            } catch (e: Exception) {
+                main.post {
+                    uploadText = ""
+                    status = "Upload failed: ${e.message}"
+                }
+            }
+        }
+    }
+
     fun uploadMmrec() {
         val sid = sessionId ?: return
         bg {
@@ -611,6 +659,7 @@ fun MmcApp(controller: MmcController) {
             Screen.LIVE -> LiveScreen(controller)
             Screen.TEST -> TestScreen(controller)
             Screen.REPORT -> ReportScreen(controller)
+            Screen.UPLOAD -> UploadScreen(controller)
         }
     }
 }
@@ -696,6 +745,7 @@ private fun LiveScreen(c: MmcController) {
             Button(onClick = { c.refreshState() }) { Text("Refresh") }
             Button(onClick = { c.beginTest(next.optString("kp_test_ref")) }) { Text("Run test") }
             Button(onClick = { c.fetchReport() }) { Text("Report") }
+            Button(onClick = { c.screen = Screen.UPLOAD }) { Text("Upload") }
         }
     } else {
         Text("No runnable tests — adjust level/tools in Settings.")
@@ -806,6 +856,48 @@ private fun ReportScreen(c: MmcController) {
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         Button(onClick = { c.uploadMmrec() }) { Text("Upload .mmrec") }
         Button(onClick = { c.screen = Screen.LIVE }) { Text("← Live") }
+    }
+}
+
+@Composable
+private fun UploadScreen(c: MmcController) {
+    Text("6 · Upload (PDF / CSV / photo / video)", style = MaterialTheme.typography.titleMedium)
+    if (c.sessionId == null) {
+        Button(onClick = { c.createUploadSession() }) { Text("New upload session") }
+    } else {
+        Text("Session: ${c.sessionId}")
+    }
+    var pendingKind by androidx.compose.runtime.remember { mutableStateOf("manual_pdf") }
+    var pendingMime by androidx.compose.runtime.remember { mutableStateOf(arrayOf("application/pdf")) }
+    val picker = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            val bytes = c.appCtx.contentResolver.openInputStream(uri)?.readBytes() ?: ByteArray(0)
+            val name = uri.lastPathSegment?.substringAfterLast('/')?.takeIf { it.isNotEmpty() }
+                ?: "upload.${if (pendingKind == "video") "mp4" else pendingKind.substringAfter('_')}"
+            val mime = c.appCtx.contentResolver.getType(uri) ?: pendingMime.firstOrNull().orEmpty()
+            c.uploadPicked(name, bytes, mime, pendingKind)
+        }
+    }
+    // One button per kind: the system picker needs no storage permission.
+    for ((kind, label, mime) in listOf(
+        Triple("manual_pdf", "Manual PDF", arrayOf("application/pdf")),
+        Triple("scan_pdf", "Scan-tool PDF", arrayOf("application/pdf")),
+        Triple("csv", "CSV log", arrayOf("text/csv")),
+        Triple("photo", "Photo", arrayOf("image/*")),
+        Triple("video", "Video", arrayOf("video/mp4", "video/quicktime")),
+    )) {
+        Button(onClick = {
+            pendingKind = kind
+            pendingMime = mime
+            picker.launch(mime)
+        }) { Text(label) }
+    }
+    if (c.uploadText.isNotEmpty()) Text(c.uploadText)
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Button(onClick = { c.screen = Screen.LIVE }) { Text("← Live") }
+        Button(onClick = { c.fetchReport() }) { Text("Report") }
     }
 }
 

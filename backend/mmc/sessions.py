@@ -34,7 +34,7 @@ from mmc import vin as vin_mod
 SCHEMAS_DIR = Path(__file__).resolve().parents[2] / "packages" / "schemas"
 
 LEVELS = ("L1", "L2", "L3")
-MODES = ("live", "sim", "replay")
+MODES = ("live", "sim", "replay", "upload")
 
 
 def _schema_registry() -> Registry:

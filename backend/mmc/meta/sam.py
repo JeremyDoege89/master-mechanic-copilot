@@ -8,7 +8,11 @@ Verified request shape (live run 2026-10-28: concept "battery" on
 {"type": "input_image", "image_url": "data:<mime>;base64,..."}]}]``. A bare
 ``[input_text, input_image]`` list is REJECTED with
 ``400 input[0] did not match any supported type``. Video wraps the same way
-with an ``input_file`` part for the clip. SAM does NOT return JSON: it
+with an ``input_file`` part for the clip — verified live 2026-10-29
+(``scripts/spike_meta_upload.py`` on the Files-API MP4): BOTH shapes work,
+inline ``file_data`` + filename and Files API ``file_id``, 75 masks each.
+The default stays ``"inline"`` (no extra upload round-trip); ``"file_id"``
+stays as a one-keyword option. SAM does NOT return JSON: it
 streams ``output_text``
 in its own grammar, one line per frame, e.g.
 ``<0f>0<|box;x1=963;y1=690;x2=1130;y2=830;w=1280;h=960|><|mask;x=0;y=0;data=141,168,...|>``.
@@ -29,7 +33,8 @@ not an error — longer phrases miss while short common nouns hit
 :func:`segment_with_fallback` to retry once with a shorter concept.
 
 Cost: SAM usage carries no tokens, only ``images_processed`` (1 per image
-call); the ledger entry comes from that via
+call, $0.0025) or ``video_frames_processed`` (75 on the live M5U clip,
+$0.015 with the 50-frame floor); the ledger entry comes from those via
 ``budget.actual_cost_from_usage``.
 """
 
@@ -316,6 +321,22 @@ def _video_input(prompt_text: str, video_bytes: bytes, filename: str, container:
     )
 
 
+def _video_file_id_input(prompt_text: str, video_file_id: str) -> list[dict]:
+    """Responses ``input`` for one video call referencing a Files API upload.
+
+    Same single-user-message wrapper, but the clip rides as an ``input_file``
+    part carrying only ``file_id`` (no inline bytes). Which of the two the
+    API accepts is decided by the M5U owner spike (``scripts/spike_meta_upload.py``);
+    see ``track_video``'s ``video_source`` switch.
+    """
+    return _user_message(
+        [
+            {"type": "input_text", "text": prompt_text},
+            {"type": "input_file", "file_id": video_file_id},
+        ]
+    )
+
+
 def segment_image(
     concept: str,
     image_bytes: bytes,
@@ -408,19 +429,32 @@ def track_video(
     concepts: list[str] | None = None,
     frames: int = VIDEO_MIN_FRAMES,
     size: tuple[int, int] | None = None,
+    video_source: str = "inline",
+    video_file_id: str | None = None,
 ) -> tuple[SamResult, dict]:
     """SAM video segmentation: concepts + box prompts, at most 3 objects.
 
     ``input`` is one user message wrapping ``[input_text, input_file]``
-    (same wrapper SAM 3.1 requires for images; MP4/MOV H.264 only, clip
-    inline as base64 ``file_data``) and box prompts are built with
-    :func:`build_object_prompt` on frame 0, so ``size`` (display
-    width/height in pixels) is required whenever ``boxes`` are given.
-    With ``boxes`` the object-prompt text goes ALONE as input_text
+    (same wrapper SAM 3.1 requires for images; MP4/MOV H.264 only) and box
+    prompts are built with :func:`build_object_prompt` on frame 0, so
+    ``size`` (display width/height in pixels) is required whenever ``boxes``
+    are given. With ``boxes`` the object-prompt text goes ALONE as input_text
     (phrases cannot be combined with object prompts — same 400 as images);
     concepts stay in the request record and the first labels the result.
     Returns ``(SamResult, key-free record)``.
+
+    ``video_source`` picks how the clip rides in the ``input_file`` part:
+    ``"inline"`` (default, no extra upload round-trip) sends base64
+    ``file_data`` + filename; ``"file_id"`` sends only
+    ``{"file_id": video_file_id}`` for a clip already uploaded via the
+    Files API. Verified live 2026-10-29 (``scripts/spike_meta_upload.py``):
+    BOTH shapes work (75 masks each on the spike clip), so the default
+    stays ``"inline"`` and ``"file_id"`` stays as a one-keyword option.
     """
+    if video_source not in ("inline", "file_id"):
+        raise ValueError(f"video_source must be 'inline' or 'file_id', not {video_source!r}")
+    if video_source == "file_id" and not video_file_id:
+        raise ValueError("video_source='file_id' needs video_file_id from the Files API")
     container = check_video_bytes(video_bytes, filename)
     boxes = list(boxes or [])
     concepts = [_check_concept(c) for c in (concepts or [])]
@@ -457,19 +491,23 @@ def track_video(
         "op": "sam.track_video.v1",
         "container": container,
         "video_bytes": len(video_bytes),
+        "video_source": video_source,
         "concepts": concepts,
         "prompt": prompt_text,
         "frames": max(int(frames), VIDEO_MIN_FRAMES),
     }
+    if video_source == "file_id":
+        assert video_file_id is not None
+        request["video_file_id"] = video_file_id
+        live_input = _video_file_id_input(prompt_text, video_file_id)
+    else:
+        live_input = _video_input(prompt_text, video_bytes, filename, container)
     events, _text, _usage, record = client.call_stream(
         kind="sam_call",
         model_key="sam",
         request=request,
         estimate_usd=estimate_sam_video(frames),
-        response_kwargs={
-            "input": _video_input(prompt_text, video_bytes, filename, container),
-            "stream": True,
-        },
+        response_kwargs={"input": live_input, "stream": True},
     )
     seg = parse_video_events(events)
     concept = concepts[0] if concepts else "tracked object"

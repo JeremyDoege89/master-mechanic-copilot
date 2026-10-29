@@ -57,6 +57,18 @@ def test_sam_pricing_and_video_minimum():
     assert estimate_sam_video(3) == pytest.approx(50 / 1000 * 0.20)
 
 
+def test_sam_video_actual_cost_uses_frames_with_minimum():
+    # Live SAM video usage carries video_frames_processed (no tokens):
+    # 75 frames at $0.20/1k is $0.015, not the $0.01 estimate for 50.
+    assert actual_cost_from_usage(
+        "sam-3.1", {"video_frames_processed": 75}
+    ) == pytest.approx(75 / 1000 * 0.20)
+    # The 50-frame minimum is a floor (max), never a cap.
+    assert actual_cost_from_usage(
+        "sam-3.1", {"video_frames_processed": 3}
+    ) == pytest.approx(50 / 1000 * 0.20)
+
+
 def test_actual_cost_uses_returned_usage_not_estimate():
     usage = {"input_tokens": 2000, "output_tokens": 100,
              "input_tokens_details": {"cached_tokens": 1000}}

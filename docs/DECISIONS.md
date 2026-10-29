@@ -2,6 +2,115 @@
 
 Newest first. Each entry: date, decision, why. Add one whenever scope, a dependency or an architecture choice changes.
 
+## 2026-10-29 — SAM video cost fix + per-call reasoning effort
+
+- Cost bug: SAM video usage reports `video_frames_processed: 75` (no
+  tokens). The ledger logged $0.010000 (the 50-frame pre-call estimate)
+  instead of $0.015 (75 frames at $0.20/1k). Fixed
+  `budget.actual_cost_from_usage` to bill `video_frames_processed` via
+  `estimate_sam_video` — the 50-frame minimum is `max(50, frames)`, a
+  floor, never a cap. Covered by
+  `test_sam_video_actual_cost_uses_frames_with_minimum` (75 -> $0.015,
+  3 -> $0.01 floor).
+- Model quality (credits plentiful): the Responses API accepts
+  `reasoning={"effort": ...}` (`low|medium|high|xhigh`) on
+  `muse-spark-1.3` and `muse-wonder-1.0`; no call set it until now.
+  Per-call-kind effort from env (in `.env.example`):
+  `EFFORT_SPARK_LIVE=medium` (live keyframe "what am I looking at",
+  keyframe->labels target < 3 s), `EFFORT_SPARK_EXTRACT=high` (PDF spec
+  tables, video events, instrument reading), `EFFORT_SPARK_AGENT=high`
+  (orchestration / explanations), `EFFORT_WONDER=xhigh` (report review,
+  one call per report). `spark.reasoning_effort(kind)` reads env with
+  those defaults (unknown values fall back); every Spark call puts the
+  effort both in the cached/logged `request` record (`reasoning.effort`,
+  so the response-cache hash stays deterministic per effort) and in the
+  live `reasoning` kwarg. Covered by `backend/tests/test_meta_effort.py`
+  (defaults, override, request/cache determinism).
+
+## 2026-10-29 — M5U reconciled with the live run (LIVE, not provisional)
+
+- Owner run `scripts/spike_meta_upload.py` 2026-10-29 (outside the sandbox,
+  key from `~/.config/meta/model-api.env`): every call succeeded. Files API
+  upload (`purpose="user_data"`, OpenAI SDK Files API on the same
+  `base_url`/key, id cached under `DATA_DIR/llm_cache/files/<sha256>.json`)
+  -> Spark spec extraction: 3 ranges (`fuel_pressure_kpa` 280-420 kPa,
+  `charging_voltage_v` 13.5-14.8 V, `ect_warm_plateau_degc` 90-98 degC).
+  Spark video events on the Files-API MP4: 1 event (`[0.0-2.36s]` "hood open
+  showing engine bay", `sam_concept` "hood"). SAM video worked with BOTH the
+  inline `input_file` part (`file_data: data:video/mp4;base64,...` +
+  `filename`) and the Files API `file_id` part (`{"file_id": ...}`),
+  75 masks each on the spike clip.
+- Verified request shapes (all one user message wrapping the parts):
+  Spark PDF/video `{"role": "user", "content": [{"type": "input_text", ...},
+  {"type": "input_file", "file_id": ...}]}`; SAM video `input_text` (object
+  prompt alone when boxes are given) + `input_file` either inline
+  `file_data` or `file_id`. SAM video usage carries no tokens, only
+  `video_frames_processed: 75` (cost $0.015 at $0.20/1k frames with the
+  50-frame floor — see the cost fix entry above); Spark usage carries
+  `input/output_tokens` plus `reasoning_tokens` (billed as output, already
+  in the ledger math).
+- `sam.track_video` defaults to `video_source="inline"` (no extra upload
+  round-trip); `"file_id"` stays as a one-keyword option for clips already
+  uploaded via the Files API. `upload/video.py analyze_clip` uses the
+  default (inline sub-clips), so no call-site change was needed.
+- Fixtures flipped to LIVE (not provisional):
+  `backend/tests/fixtures/upload/spark_pdf_spec_01.json` /
+  `spark_video_events_01.json` (`call_record` dicts, `"provisional": false`
+  + `"captured": "spike_meta_upload.py owner run"`) and
+  `sam_video_upload_01.jsonl` (live 83-event stream, 75 tracked masks).
+  Tests replay them (`test_upload_fixtures.py` asserts the 3 ranges / 1
+  event / 75 masks + `video_frames_processed == 75`; `test_upload_video.py`
+  replays the live stream for both `video_source` shapes and asserts the
+  `inline` default). `SOURCE.txt` provenance updated.
+
+## 2026-10-28 — M5U upload mode implemented (spike pending)
+
+- Upload mode per `.agents/plans/M5U.md` §§1–5: new schemas
+  `spec_range.json` + `video_events.json` (15 schemas total);
+  `meta/files.py` Files API upload (sha256 local cache, replay-miss raises);
+  `meta/spark.py` `extract_spec_ranges` / `summarize_video` (prompt-shaped
+  JSON + schema validation + probability scan; the LLM never supplies
+  `extractor`/`source_blob_sha256` — `upload/specs.py` attaches them);
+  `upload/{specs,csv_logs,video}.py`; `api/routes_uploads.py` (blobs first,
+  processing second; fixture-analyzer seam; replay sessions read-only for
+  processing routes); session `mode="upload"`; `evaluator` applies manual
+  `min/max/units` onto `expected`; result route takes optional `spec_id`
+  (unknown → 400, nothing appended); Android `uploadFile`/`extractPdf`/
+  `parseCsv`/`analyzeVideo` + Upload screen via system picker (no new
+  permissions, no manifest changes). No new dependencies: stdlib PDF
+  writer + CSV, system ffmpeg/ffprobe only.
+- SAM video was NOT verified live (only the image path was):
+  `sam.track_video` keeps a one-keyword `video_source` switch
+  (`"inline"` default sends base64 `file_data`; `"file_id"` sends a Files
+  API id). `scripts/spike_meta_upload.py` tries inline first, then
+  file_id, prints each call's outcome (keeps going after failures), and
+  records which the API accepts plus the exact error — flip the default
+  to the winner after the owner run.
+- CSV moves posteriors only via derived `test_result`s through the normal
+  fold (already-performed / not-runnable → reported skips); PDF/video
+  uploads append evidence + observations only. Golden CSVs are hand-written
+  from the M3 sim numbers (vacuum leak → `lean_idle_normal_cruise`).
+- Verified 2026-10-28: backend 226 passed + 1 skipped (pre-existing skip);
+  38 upload tests; Android 70 unit tests incl. new `SessionClientTest`;
+  `replay_check.sh` OK. Owner spike (`scripts/spike_meta_upload.py`,
+  outside sandbox) still pending — provisional fixtures stay until it flips
+  `provisional`/`captured`.
+
+## 2026-10-28 — M5U upload fixtures PROVISIONAL (spike pending)
+
+- `backend/tests/fixtures/upload/spark_pdf_spec_01.json`,
+  `spark_video_events_01.json` (`call_record` dicts) and
+  `sam_video_upload_01.jsonl` (raw stream events) are PROVISIONAL:
+  `"provisional": true` + `"captured": null` until the owner runs
+  `scripts/spike_meta_upload.py` outside the sandbox, which replaces them
+  with live outputs and flips both. Code and tests pass on the
+  provisional shape and are re-checked after capture.
+- SAM video was NOT verified live (only the image path was): the spike
+  tries the inline `input_file` part first, then a Files API `file_id`
+  part, records which the API accepts (and the exact error for the
+  other), and `sam.track_video` keeps a one-keyword `video_source`
+  switch (`"inline"` default) so the winner is one keyword flip.
+
 ## 2026-10-28 — M5 reconciled with the live SAM API + Android builds offline
 
 1. Real SAM 3.1 shape (two captured streams in

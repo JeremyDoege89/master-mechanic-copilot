@@ -1,0 +1,1 @@
+{"exporter":"forscan","medians":{"ect_c":51.6,"iat_c":25.0,"rpm":750.0,"time_s":300.0,"voltage_v":14.2},"outcomes":{"battery_voltage_rest_running":"normal","ect_warmup_curve":"plateau_low"},"skipped":["maf_pid_plausibility","trim_idle_vs_2500"]}

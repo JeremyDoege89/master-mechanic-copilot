@@ -74,12 +74,18 @@ def actual_cost_from_usage(model: str, usage: dict) -> float:
     if "sam" in model:
         # SAM bills per image / per frame, not per token. The verified
         # Responses usage block carries no token counts, only
-        # ``images_processed`` (1 per image call in the live runs), so cost
-        # accounting uses that. Unknown shapes cost 0.0 and the caller falls
-        # back to the pre-call estimate (e.g. video frame minimums).
+        # ``images_processed`` (1 per image call in the live runs) or
+        # ``video_frames_processed`` (75 on the live M5U clip), so cost
+        # accounting uses those. Unknown shapes cost 0.0 and the caller
+        # falls back to the pre-call estimate.
         images = usage.get("images_processed")
         if isinstance(images, (int, float)) and not isinstance(images, bool):
             return max(0.0, float(images)) / 1000.0 * SAM_IMAGE_PER_1K
+        frames = usage.get("video_frames_processed")
+        if isinstance(frames, (int, float)) and not isinstance(frames, bool):
+            # 50-frame minimum is a floor (max), never a cap: 75 frames
+            # bill 75, not 50.
+            return estimate_sam_video(int(frames))
         return 0.0
     return 0.0
 

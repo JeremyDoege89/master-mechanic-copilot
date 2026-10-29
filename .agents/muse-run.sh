@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Run one Muse Code job headlessly from a prompt file and keep its log.
 # Usage: .agents/muse-run.sh <name> [effort] [model]   (reads .agents/runs/<name>.prompt)
-# Model by job: *-plan and *-review use muse-wonder-1.0 (strongest reasoning, priced for
-# few, high-value calls); everything else (builds, fixes) uses muse-spark-1.3.
+# Model by job: *-plan and *-review use muse-wonder-1.0 (strongest reasoning); everything else
+# (builds, fixes) uses muse-spark-1.3. Default effort is xhigh: credits allow the best work.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-name="$1"; effort="${2:-high}"
+name="$1"; effort="${2:-xhigh}"
 case "$name" in
   *-plan|*-review) default_model=muse-wonder-1.0 ;;
   *) default_model=muse-spark-1.3 ;;

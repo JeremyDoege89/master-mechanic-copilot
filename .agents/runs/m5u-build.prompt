@@ -1,0 +1,11 @@
+The plan in .agents/plans/M5U.md is approved with one correction: the SAM video `input_file` inline path in sam.py was
+NOT verified live (only the image path was). The spike must test SAM video for real: try the inline input_file part
+first, then a Files API file_id part, record which one the API accepts (and the exact error for the other), and
+leave sam.track_video easy to switch. I run the spike outside your sandbox right after you finish, then send you any
+corrections, so make scripts/spike_meta_upload.py print each call's outcome clearly and keep going after a failed call.
+
+Implement the plan in its order, each step with its test before the next. Keep all existing tests green. At the end
+run the plan's verification commands except the owner spike (backend via .venv/bin/python -m pytest -q if uv's cache
+is read-only; Android with GRADLE_USER_HOME seeded from ~/.gradle and --offline, as in M5), fix failures until they
+pass, add a dated docs/DECISIONS.md entry, and do not commit. Finish with files created/changed, test counts, and
+pass/fail of each command.

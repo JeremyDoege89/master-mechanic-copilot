@@ -1,0 +1,38 @@
+Read AGENTS.md, docs/SPEC.md §4 model map and §7, docs/PLAN.md (the "Sponsor credits" note), docs/DECISIONS.md and the
+existing backend/mmc/meta/ (client.py, budget.py, spark.py, sam.py) and backend/mmc/vision/.
+
+New capability: the owner was awarded $100 and up to 2M tokens/min on **Muse Spark Open** (Meta's open-weight model)
+via Baseten, for this hackathon. It is a Meta model, so it fits the rules' "Meta models via the Meta Model API or the
+open-weight models". Facts verified live tonight (Oct 29):
+- OpenAI-compatible Chat Completions (NOT the Responses API): base_url https://inference.baseten.co/v1, model exactly
+  `meta-models/muse-spark-open-1026` (the key works with nothing else), key in env BASETEN_API_KEY (from
+  ~/.config/baseten/api.env; never print or commit it).
+- Always reasons: the message has `reasoning_content` beside `content`; usage has prompt/completion tokens, reasoning
+  tokens, cached tokens. A one-line text answer took 3.3 s and was correct on a fuel-trim question.
+- Images work as `{"type":"image_url","image_url":{"url":"data:image/jpeg;base64,..."}}` (engine_bay_02.jpg: 6.5 s,
+  named battery, radiator, intake manifold, air filter housing, brake fluid reservoir).
+- Audio does NOT work today: `input_audio` (wav/mp3) and `audio_url` data URLs return audio_tokens=0 and the model says
+  it can't hear; a `file` part is a 400. Treat Spark Open audio as unavailable behind a flag until Baseten confirms.
+- Pricing to assume for the ledger: $1.25/M input, $4.25/M output (third-party listing; credits are separate from Meta's).
+
+Write .agents/plans/M5O.md, under 130 lines, covering in order:
+1. backend/mmc/meta/spark_open.py: client through the existing MetaClient machinery or a sibling (budget ledger with
+   its own hard stop BASETEN_BUDGET_USD_HARD_STOP=80, sha256 response cache, REPLAY_USE_CACHED_LLM $0 replay, key-free
+   llm_call events with provider="baseten" and the model pin, retries/429). Store reasoning_content in the call record.
+2. Second-opinion vision: on each analysed keyframe, run Spark 1.3 and Spark Open in parallel on the same schema;
+   components both name are marked corroborated, disagreements are surfaced in the UI and report. This only changes
+   the observation's confidence/agreement fields, never probabilities (constraint 4). Measure the latency budget.
+3. Resilience: when the Meta client refuses (budget) or fails (5xx/timeout after retries), text and image calls fall
+   back to Spark Open, and the event says so. SAM and Voice Transcribe have no fallback.
+4. Engine-sound evidence without an LLM: deterministic DSP on a short phone recording (stdlib + numpy only if numpy is
+   already installed; otherwise note it in DECISIONS as a new dependency with the reason) that uses the live OBD rpm
+   to compute firing frequency and outputs KP-vocabulary observations: periodic dropout at the firing order (misfire
+   pattern), narrow-band high-pitch tone (belt/bearing squeal), broadband hiss rising at idle (vacuum leak), with the
+   numbers that justify each. Add matching KP features/likelihood hooks only if the KP format already supports them.
+   A Spark Open audio path stays stubbed behind SPARK_OPEN_AUDIO=false.
+5. Update AGENTS.md constraint 3, the model map in docs/SPEC.md, .env.example (BASETEN_BASE_URL, MODEL_SPARK_OPEN,
+   BASETEN_BUDGET_USD_HARD_STOP, SPARK_OPEN_AUDIO) and the README model map to show both Meta paths.
+6. scripts/spike_spark_open.py (owner runs it outside your sandbox): text, image and audio probes saving key-free
+   fixtures under backend/tests/fixtures/spark_open/.
+Tests per item that run offline on fixtures, expected spend, exact verification commands. Write only the plan file.
+End with a 5-line summary and any ambiguities resolved.

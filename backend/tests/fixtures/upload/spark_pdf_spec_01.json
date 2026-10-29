@@ -1,0 +1,35 @@
+{
+  "cached": false,
+  "captured": "spike_meta_upload.py owner run",
+  "cost_usd": 0.006135,
+  "kind": "llm_call",
+  "model": "muse-spark-1.3",
+  "output_text": "{\"spec_ranges\": [{\"spec_id\": \"fuel_pressure_kpa\", \"parameter\": \"fuel_pressure\", \"min\": 280, \"max\": 420, \"units\": \"kPa\", \"page\": 1}, {\"spec_id\": \"charging_voltage_v\", \"parameter\": \"charging_voltage\", \"min\": 13.5, \"max\": 14.8, \"units\": \"V\", \"page\": 1}, {\"spec_id\": \"ect_warm_plateau_degc\", \"parameter\": \"ect_warm_plateau\", \"min\": 90, \"max\": 98, \"units\": \"degC\", \"page\": 1}]}",
+  "provisional": false,
+  "request": {
+    "file_id": "file-1616358413566877",
+    "input": [
+      {
+        "content": "You are the spec-table front-end of a vehicle-diagnosis copilot. Read the uploaded manual or scan-tool page (PDF) and transcribe every numeric specification table row literally. Reply with JSON only, exactly: {\"spec_ranges\": [{\"spec_id\": str, \"parameter\": str, \"min\": number, \"max\": number, \"units\": str, \"page\": int}]}. spec_id is a stable slug like \"fuel_pressure_kpa\"; parameter is the canonical name like \"fuel_pressure\" (a non-table numeric readout uses \"scan_readout:<slug>\" with min==max only when the page states a value, never invented). Transcribe digits literally; never guess a value you cannot see (omit the row instead). Never output probabilities, priors, posteriors, likelihoods or diagnoses.",
+        "role": "system"
+      },
+      {
+        "content": "Extract every numeric spec row from this manual page. Page 1.",
+        "role": "user"
+      }
+    ],
+    "op": "spark.spec_table.v1"
+  },
+  "request_sha256": "d00b3892936b3e8bbce2c6db4711cfa83d159f5a4353ea5714697854984d29df",
+  "usage": {
+    "input_tokens": 2749,
+    "input_tokens_details": {
+      "cached_tokens": 0
+    },
+    "output_tokens": 635,
+    "output_tokens_details": {
+      "reasoning_tokens": 486
+    },
+    "total_tokens": 3384
+  }
+}

@@ -1,0 +1,1 @@
+{"exporter":"car_scanner","medians":{"ect_c":93.0,"ltft_b1_pct":1.0,"rpm":1625.0,"stft_b1_pct":0.5,"time_s":3.5,"voltage_v":14.2},"outcomes":{"battery_voltage_rest_running":"normal","ect_warmup_curve":"plateau_normal","trim_idle_vs_2500":"normal"},"skipped":["maf_pid_plausibility"]}

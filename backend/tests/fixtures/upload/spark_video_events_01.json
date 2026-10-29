@@ -1,0 +1,35 @@
+{
+  "cached": false,
+  "captured": "spike_meta_upload.py owner run",
+  "cost_usd": 0.006214000000000001,
+  "kind": "llm_call",
+  "model": "muse-spark-1.3",
+  "output_text": "{\"events\": [{\"t_start_s\": 0.0, \"t_end_s\": 2.36, \"label\": \"hood open showing engine bay\", \"sam_concept\": \"hood\"}]}",
+  "provisional": false,
+  "request": {
+    "file_id": "file-2168074164094778",
+    "input": [
+      {
+        "content": "You are the video front-end of a vehicle-diagnosis copilot. Watch the uploaded clip and list timestamped observable events. Reply with JSON only, exactly: {\"events\": [{\"t_start_s\": number, \"t_end_s\": number, \"label\": str, \"sam_concept\": str}]}. Each sam_concept is ONE short common noun for a segmentation model, 1-2 words, never a comma list. Never output probabilities, priors, posteriors or diagnoses.",
+        "role": "system"
+      },
+      {
+        "content": "List the timestamped observable events in this clip.",
+        "role": "user"
+      }
+    ],
+    "op": "spark.video_events.v1"
+  },
+  "request_sha256": "432c827feb01d8308136dc564027cf0b451e27057ce0027c95b34d3817959610",
+  "usage": {
+    "input_tokens": 898,
+    "input_tokens_details": {
+      "cached_tokens": 0
+    },
+    "output_tokens": 1198,
+    "output_tokens_details": {
+      "reasoning_tokens": 1147
+    },
+    "total_tokens": 2096
+  }
+}

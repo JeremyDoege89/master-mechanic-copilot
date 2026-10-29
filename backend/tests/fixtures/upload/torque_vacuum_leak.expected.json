@@ -1,0 +1,1 @@
+{"exporter":"torque","medians":{"ect_c":90.55555555555556,"ltft_b1_pct":6.25,"rpm":1625.0,"speed_kph":48.2802,"stft_b1_pct":4.85,"voltage_v":14.2},"outcomes":{"battery_voltage_rest_running":"normal","ect_warmup_curve":"plateau_normal","trim_idle_vs_2500":"lean_idle_normal_cruise"},"skipped":["maf_pid_plausibility"]}

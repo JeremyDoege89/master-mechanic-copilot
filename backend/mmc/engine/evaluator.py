@@ -34,7 +34,14 @@ def evaluate(
         raise ValueError(f"unknown evaluator {test.evaluator!r} for test {test.ref}")
     outcome, expected = fn(test, measured)
     if manual_spec is not None:
-        expected = {"source": {"kind": "manual_page", **manual_spec}, "outcome": expected.get("outcome", "")}
+        source = {"kind": "manual_page", **manual_spec}
+        expected = {"source": source, "outcome": expected.get("outcome", "")}
+        # A manual page states the expectation numerically: its min/max/units
+        # ride on the expected value itself (test_result schema), not just
+        # inside the source citation.
+        for key in ("min", "max", "units"):
+            if manual_spec.get(key) is not None:
+                expected[key] = manual_spec[key]
     if outcome not in test.outcomes:
         raise ValueError(f"evaluator {test.evaluator} produced {outcome!r}, not in {test.outcomes}")
     return outcome, expected

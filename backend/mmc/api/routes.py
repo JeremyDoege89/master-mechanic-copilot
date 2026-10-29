@@ -58,6 +58,9 @@ class CreateSessionBody(BaseModel):
     vehicle: dict | None = None
     user_level: str = "L1"
     tools: list[str] = []
+    # Session mode: live | sim | replay | upload (SPEC section 3 flow 8 —
+    # upload sessions take manual pages / CSV logs / photos / video clips
+    # instead of the live adapter strip).
     mode: str = "live"
 
 
@@ -70,6 +73,7 @@ class ResultBody(BaseModel):
     measured: dict
     conditions: dict = {}
     evidence_ids: list[str] = []
+    spec_id: str | None = None
 
 
 @router.post("/sessions")
@@ -129,8 +133,18 @@ async def post_test_result(session_id: str, test_ref: str, body: ResultBody):
         )
         reasons = blocked["blocked_reasons"] if blocked else ["not currently runnable"]
         raise HTTPException(status_code=409, detail=f"test not runnable: {'; '.join(reasons)}")
+    manual_spec = None
+    if body.spec_id is not None:
+        from mmc.upload import specs as specs_mod
+
+        spec = specs_mod.find_spec(session, body.spec_id)
+        if spec is None:
+            # Unknown spec_id: 400 with zero events appended (validated
+            # before the first append below).
+            raise HTTPException(status_code=400, detail=f"unknown spec_id {body.spec_id!r}")
+        manual_spec = specs_mod.manual_spec_for(spec)
     try:
-        outcome, expected = evaluator_mod.evaluate(test, dict(body.measured))
+        outcome, expected = evaluator_mod.evaluate(test, dict(body.measured), manual_spec)
     except (ValueError, KeyError) as e:
         raise HTTPException(status_code=400, detail=f"cannot evaluate: {e}")
 
