@@ -24,7 +24,24 @@ import os
 import shutil
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parent
+
+def _resolve_repo_root() -> Path:
+    """Repo checkout root.
+
+    On Modal this module runs as ``/root/modal_app.py`` while the tree
+    lives at ``/opt/mmc`` (``add_local_dir``), so the file location is
+    wrong there: ``MMC_REPO_ROOT`` (``/opt/mmc`` in ``MODAL_ENV``) wins
+    whenever it points at a checkout. Locally the file location is the
+    fallback. The marker check keeps a stale/bogus env value from
+    shadowing a good checkout.
+    """
+    env = os.environ.get("MMC_REPO_ROOT", "").strip()
+    if env and (Path(env) / "packages" / "schemas").is_dir():
+        return Path(env)
+    return Path(__file__).resolve().parent
+
+
+REPO_ROOT = _resolve_repo_root()
 BACKEND_DIR = REPO_ROOT / "backend"
 WEB_DIR = REPO_ROOT / "web"
 
@@ -34,6 +51,10 @@ MODAL_ENV = {
     "MMC_PUBLIC_LIVE_BUDGET_USD": "0",
     "REPLAY_USE_CACHED_LLM": "true",
     "DATA_DIR": "/data",
+    # Tells backend/mmc/_paths.py where the checkout lives on Modal
+    # (non-editable installs can't find packages/schemas from __file__).
+    # Harmless locally: ignored unless it holds packages/schemas.
+    "MMC_REPO_ROOT": "/opt/mmc",
 }
 
 BUNDLED_FIXTURES = "tests/fixtures/sessions"
@@ -71,7 +92,10 @@ def startup_check(data_dir: str) -> dict:
     """
     import sys
 
-    sys.path.insert(0, str(BACKEND_DIR))
+    # Re-resolve: the env may have been set after this module was imported.
+    backend_dir = str(_resolve_repo_root() / "backend")
+    if backend_dir not in sys.path:
+        sys.path.insert(0, backend_dir)
     from mmc.meta.budget import get_tracker
 
     meta = get_tracker("meta")
@@ -96,7 +120,7 @@ def startup_check(data_dir: str) -> dict:
 
 def seed_fixtures(data_dir: str) -> list[str]:
     """Seed bundled .mmrec fixtures into the volume on first boot."""
-    src = BACKEND_DIR / BUNDLED_FIXTURES
+    src = _resolve_repo_root() / "backend" / BUNDLED_FIXTURES
     dest = Path(data_dir) / "fixtures" / "sessions"
     dest.mkdir(parents=True, exist_ok=True)
     seeded = []
@@ -112,9 +136,14 @@ def create_app(web_dist: Path | None = None):
     """Build the serving FastAPI app (backend API + web/dist at /)."""
     import sys
 
-    sys.path.insert(0, str(BACKEND_DIR))
     for key, value in MODAL_ENV.items():
         os.environ.setdefault(key, value)
+    # Resolve AFTER the env defaults land, so MMC_REPO_ROOT is honoured
+    # even when it was set after this module was imported.
+    repo_root = _resolve_repo_root()
+    backend_dir = str(repo_root / "backend")
+    if backend_dir not in sys.path:
+        sys.path.insert(0, backend_dir)
 
     from mmc import public as public_mod
     from mmc.main import app as backend_app
@@ -124,7 +153,9 @@ def create_app(web_dist: Path | None = None):
     startup_check(data_dir)
     seed_fixtures(data_dir)
 
-    dist = web_dist or (WEB_DIR / "dist")
+    # The built web app ships at <repo>/web/dist (built during image
+    # construction); on Modal that is /opt/mmc/web/dist.
+    dist = web_dist or (repo_root / "web" / "dist")
     if dist.is_dir() and not getattr(backend_app, "_mmc_web_mounted", False):
         from fastapi.staticfiles import StaticFiles
 
@@ -149,7 +180,11 @@ image = (
     )
     .add_local_dir(str(REPO_ROOT), remote_path="/opt/mmc", copy=True, ignore=IMAGE_IGNORE)
     .run_commands(
-        "pip install /opt/mmc/backend",
+        # Editable: the container serves the /opt/mmc tree in place, so
+        # repo-relative reads (schemas, KP packs, prompts, fixtures)
+        # keep working. A non-editable `pip install` copies mmc into
+        # site-packages and breaks every one of those lookups.
+        "pip install -e /opt/mmc/backend",
         "cd /opt/mmc/web && npm ci && npm run build",
     )
 )

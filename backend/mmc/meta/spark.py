@@ -14,15 +14,15 @@ from __future__ import annotations
 
 import base64
 import json
-from pathlib import Path
+from functools import lru_cache
 from typing import Any
 
 import jsonschema
 
+from mmc._paths import schemas_dir
+
 from .budget import estimate_spark
 from .client import LLMCallResult, MetaClient
-
-SCHEMAS_DIR = Path(__file__).resolve().parents[3] / "packages" / "schemas"
 
 # Rough planning estimate for a ~1024px image + prompt in / ~400 JSON tokens out.
 IMAGE_INPUT_TOKENS = 2500
@@ -71,14 +71,28 @@ def reasoning_effort(kind: str) -> str:
 
 
 def _validators() -> dict[str, jsonschema.Draft202012Validator]:
+    schemas = schemas_dir()
     out = {}
     for name in ("vision_components", "vision_instrument", "spec_range", "video_events"):
-        schema = json.loads((SCHEMAS_DIR / f"{name}.json").read_text())
+        schema = json.loads((schemas / f"{name}.json").read_text())
         out[name] = jsonschema.Draft202012Validator(schema)
     return out
 
 
-VALIDATORS = _validators()
+@lru_cache(maxsize=1)
+def _validators_cached() -> dict[str, jsonschema.Draft202012Validator]:
+    # Lazy (not module-level): the schemas live outside the installed
+    # package, so they resolve via MMC_REPO_ROOT on Modal instead of via
+    # this file's parents (which point into site-packages there).
+    return _validators()
+
+
+def __getattr__(name: str) -> Any:
+    if name == "VALIDATORS":
+        return _validators_cached()
+    if name == "SCHEMAS_DIR":
+        return schemas_dir()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 COMPONENTS_SYSTEM = (
     "You are the vision front-end of a vehicle-diagnosis copilot. "
@@ -134,7 +148,7 @@ def _validate(name: str, raw_text: str) -> dict:
         data = json.loads(raw_text)
     except ValueError as e:
         raise ValueError(f"spark {name}: response is not JSON: {e}") from e
-    VALIDATORS[name].validate(data)
+    _validators_cached()[name].validate(data)
     return data
 
 
@@ -247,7 +261,7 @@ def read_instrument(
             data = _json.loads(result.output_text)
         except ValueError as e:
             raise ValueError(f"spark-open instrument: response is not JSON: {e}") from e
-        VALIDATORS["vision_instrument"].validate(data)
+        _validators_cached()["vision_instrument"].validate(data)
         return data, record
 
     return fallback_mod.call_text_or_image(primary, open_read, kind="image")
@@ -334,7 +348,7 @@ def _llm_spec_validator() -> jsonschema.Draft202012Validator:
     (``upload/specs.py`` owns the blob hash — the LLM never supplies
     them), so the LLM shape requires only ``spec_id`` + ``parameter``.
     """
-    schema = json.loads((SCHEMAS_DIR / "spec_range.json").read_text())
+    schema = json.loads((schemas_dir() / "spec_range.json").read_text())
     schema = dict(schema)
     schema["required"] = ["spec_id", "parameter"]
     return jsonschema.Draft202012Validator(schema)
@@ -419,6 +433,6 @@ def summarize_video(file_id: str, client: MetaClient) -> tuple[dict, dict]:
         data = json.loads(result.output_text)
     except ValueError as e:
         raise ValueError(f"spark video_events: response is not JSON: {e}") from e
-    VALIDATORS["video_events"].validate(data)
+    _validators_cached()["video_events"].validate(data)
     _scan_banned(data)
     return data, record

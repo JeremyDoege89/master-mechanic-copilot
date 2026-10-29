@@ -10,7 +10,6 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
-from pathlib import Path
 from typing import Any, Iterable
 
 import jsonschema
@@ -19,16 +18,14 @@ from referencing.jsonschema import DRAFT202012
 
 from mmc import __version__ as ENGINE_VERSION
 from mmc import levels as levels_mod
-
-SCHEMAS_DIR = Path(__file__).resolve().parents[3] / "packages" / "schemas"
-PROMPTS_DIR = Path(__file__).resolve().parents[1] / "agent" / "prompts"
+from mmc._paths import prompts_dir, schemas_dir
 
 AI_EXTRACTOR_PREFIXES = ("spark", "muse-")
 
 
 def _registry() -> Registry:
     pairs = []
-    for schema_path in sorted(SCHEMAS_DIR.glob("*.json")):
+    for schema_path in sorted(schemas_dir().glob("*.json")):
         schema = json.loads(schema_path.read_text())
         pairs.append(
             (schema_path.name, Resource.from_contents(schema, default_specification=DRAFT202012))
@@ -37,14 +34,14 @@ def _registry() -> Registry:
 
 
 def _validate_report(report: dict) -> None:
-    schema = json.loads((SCHEMAS_DIR / "report.json").read_text())
+    schema = json.loads((schemas_dir() / "report.json").read_text())
     jsonschema.Draft202012Validator(schema, registry=_registry()).validate(report)
 
 
 def prompts_sha256() -> str:
     """sha256 over the sorted pinned prompt files (replaces m4-no-llm-prompts)."""
     digest = hashlib.sha256()
-    for path in sorted(PROMPTS_DIR.glob("*.md")):
+    for path in sorted(prompts_dir().glob("*.md")):
         digest.update(path.name.encode("utf-8") + b"\x00" + path.read_bytes())
     return digest.hexdigest()
 

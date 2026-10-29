@@ -1,0 +1,14 @@
+First real `modal deploy` built fine but the container crash-loops on startup:
+  File "/root/modal_app.py", line 120, in create_app -> from mmc.main import app
+  File "/usr/local/lib/python3.12/site-packages/mmc/meta/spark.py", line 76, in _validators
+  FileNotFoundError: '/usr/local/lib/python3.12/packages/schemas/vision_components.json'
+Causes: (a) `pip install /opt/mmc/backend` installs a non-editable copy into site-packages, so every repo-relative path
+(packages/schemas, KP packs, report templates, agent prompts, fixtures) breaks; (b) Modal runs modal_app.py from
+/root/modal_app.py, so REPO_ROOT = /root and BACKEND_DIR/WEB_DIR/fixture seeding point at paths that don't exist.
+Fix: install the backend editable (`pip install -e /opt/mmc/backend`) or install only its dependencies and put
+/opt/mmc/backend on PYTHONPATH; resolve the repo root from an env var (MMC_REPO_ROOT=/opt/mmc in MODAL_ENV) with the file
+location as the local fallback; serve web/dist from /opt/mmc/web/dist. Add an offline test that copies modal_app.py to a
+temp dir, sets MMC_REPO_ROOT to the real repo, imports it with the stub modal, and runs create_app() + /health, /replay
+(judge fixture), report .json/.html/.pdf through TestClient, so this class of path bug is caught before deploy.
+Also check every module-level file read in backend/mmc for paths that would break in a non-editable install and make
+them resolve from the package or MMC_REPO_ROOT. Run the backend suite until green. Do not commit. Foreground only.

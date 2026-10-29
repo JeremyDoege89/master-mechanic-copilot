@@ -20,19 +20,17 @@ never falls back to Spark Open.
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import Any
 
 import jsonschema
 from referencing import Registry, Resource
 from referencing.jsonschema import DRAFT202012
 
+from mmc._paths import schemas_dir
 from mmc.meta import budget as budget_mod
 from mmc.meta.budget import BudgetExceeded
 from mmc.meta.client import MetaClient, MetaClientError, NoCachedResponse, canonical_bytes
 from mmc.meta.spark import reasoning_effort
-
-SCHEMAS_DIR = Path(__file__).resolve().parents[3] / "packages" / "schemas"
 
 WONDER_SYSTEM = (
     "You are a senior diagnostic technician reviewing a finished vehicle "
@@ -77,7 +75,7 @@ def _scan_banned(obj: Any, path: str = "$") -> None:
 
 def _registry() -> Registry:
     pairs = []
-    for schema_path in sorted(SCHEMAS_DIR.glob("*.json")):
+    for schema_path in sorted(schemas_dir().glob("*.json")):
         schema = json.loads(schema_path.read_text())
         pairs.append(
             (schema_path.name, Resource.from_contents(schema, default_specification=DRAFT202012))
@@ -86,7 +84,7 @@ def _registry() -> Registry:
 
 
 def _validator() -> jsonschema.Draft202012Validator:
-    schema = json.loads((SCHEMAS_DIR / "wonder_review.json").read_text())
+    schema = json.loads((schemas_dir() / "wonder_review.json").read_text())
     return jsonschema.Draft202012Validator(schema, registry=_registry())
 
 

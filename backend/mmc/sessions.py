@@ -26,14 +26,13 @@ from referencing.jsonschema import DRAFT202012
 from mmc import __version__ as ENGINE_VERSION
 from mmc import levels as levels_mod
 from mmc import safety as safety_mod
+from mmc._paths import packs_dir, schemas_dir
 from mmc.engine import bayes, planner, stoprule
 from mmc.engine import trace as trace_mod
-from mmc.kp.loader import PACKS_DIR, KnowledgePack, load_pack
+from mmc.kp.loader import KnowledgePack, load_pack
 from mmc.store import blobs, event_store
 from mmc.store.event_store import EventStore
 from mmc import vin as vin_mod
-
-SCHEMAS_DIR = Path(__file__).resolve().parents[2] / "packages" / "schemas"
 
 LEVELS = ("L1", "L2", "L3")
 MODES = ("live", "sim", "replay", "upload")
@@ -82,7 +81,7 @@ def video_overlays(session_id: str) -> list[dict]:
 
 def _schema_registry() -> Registry:
     pairs = []
-    for schema_path in sorted(SCHEMAS_DIR.glob("*.json")):
+    for schema_path in sorted(schemas_dir().glob("*.json")):
         schema = json.loads(schema_path.read_text())
         pairs.append(
             (schema_path.name, Resource.from_contents(schema, default_specification=DRAFT202012))
@@ -95,7 +94,7 @@ def _validators() -> dict:
     registry = _schema_registry()
 
     def _v(name: str) -> jsonschema.Draft202012Validator:
-        schema = json.loads((SCHEMAS_DIR / name).read_text())
+        schema = json.loads((schemas_dir() / name).read_text())
         return jsonschema.Draft202012Validator(schema, registry=registry)
 
     return {
@@ -116,7 +115,7 @@ def validate(schema_name: str, payload: dict) -> None:
 
 @lru_cache(maxsize=1)
 def get_pack() -> KnowledgePack:
-    return load_pack(PACKS_DIR / "ford_gen_v1.yaml")
+    return load_pack(packs_dir() / "ford_gen_v1.yaml")
 
 
 def data_root() -> Path:

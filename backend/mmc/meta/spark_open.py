@@ -464,10 +464,10 @@ def analyze_components_open(
         data = _json.loads(result.output_text)
     except ValueError as e:
         raise ValueError(f"spark-open components: response is not JSON: {e}") from e
-    from pathlib import Path as _Path
+    from mmc._paths import schemas_dir as _schemas_dir
 
     schema = _json.loads(
-        (_Path(__file__).resolve().parents[3] / "packages" / "schemas" / "vision_components.json").read_text()
+        (_schemas_dir() / "vision_components.json").read_text()
     )
     _jsonschema.Draft202012Validator(schema).validate(data)
 

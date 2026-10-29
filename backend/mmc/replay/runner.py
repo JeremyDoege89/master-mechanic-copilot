@@ -9,15 +9,16 @@ mutation: vision/upload processing routes reject them).
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 from mmc import sessions as sess
+from mmc._paths import repo_fixtures_dir
 from mmc.replay import mmrec
 
 # Shipped fixtures (judge demo + CI). Modal seeds these under DATA_DIR (§5);
-# the repo copy is the fallback for local dev.
-FIXTURES_DIR = Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "sessions"
+# the repo copy (via MMC_REPO_ROOT) is the fallback for local dev.
+# Resolved lazily: tests/ is not installed, so a file-relative lookup
+# breaks in non-editable installs.
 
 _RESERVED_ROW_KEYS = frozenset(
     {"seq", "ts", "type", "payload", "payload_sha256", "prev_hash", "hash"}
@@ -96,7 +97,7 @@ def fixture_bytes(name: str) -> bytes:
     seeded = sess.data_root() / "fixtures" / "sessions" / name
     if seeded.exists():
         return seeded.read_bytes()
-    path = FIXTURES_DIR / name
+    path = repo_fixtures_dir() / name
     if not path.exists():
         raise FileNotFoundError(f"unknown fixture {name!r}")
     return path.read_bytes()

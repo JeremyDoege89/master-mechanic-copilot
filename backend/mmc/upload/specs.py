@@ -14,18 +14,17 @@ from __future__ import annotations
 import json
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
 import jsonschema
 
-SCHEMAS_DIR = Path(__file__).resolve().parents[3] / "packages" / "schemas"
+from mmc._paths import schemas_dir
 
 EXTRACTOR = "spark:spec_table_v1"
 
 
 def _validator() -> jsonschema.Draft202012Validator:
-    schema = json.loads((SCHEMAS_DIR / "spec_range.json").read_text())
+    schema = json.loads((schemas_dir() / "spec_range.json").read_text())
     return jsonschema.Draft202012Validator(schema)
 
 

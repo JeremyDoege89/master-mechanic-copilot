@@ -14,13 +14,12 @@ from __future__ import annotations
 import json
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
 
 import jsonschema
 from referencing import Registry, Resource
 from referencing.jsonschema import DRAFT202012
 
-SCHEMAS_DIR = Path(__file__).resolve().parents[3] / "packages" / "schemas"
+from mmc._paths import schemas_dir
 
 RETAKE_CONFIDENCE = 0.8
 EXTRACTOR = "spark:instrument_v1"
@@ -28,13 +27,13 @@ EXTRACTOR = "spark:instrument_v1"
 
 def _validator() -> jsonschema.Draft202012Validator:
     pairs = []
-    for schema_path in sorted(SCHEMAS_DIR.glob("*.json")):
+    for schema_path in sorted(schemas_dir().glob("*.json")):
         schema = json.loads(schema_path.read_text())
         pairs.append(
             (schema_path.name, Resource.from_contents(schema, default_specification=DRAFT202012))
         )
     registry = Registry().with_resources(pairs)
-    schema = json.loads((SCHEMAS_DIR / "vision_instrument.json").read_text())
+    schema = json.loads((schemas_dir() / "vision_instrument.json").read_text())
     return jsonschema.Draft202012Validator(schema, registry=registry)
 
 
