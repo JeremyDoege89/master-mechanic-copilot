@@ -1,0 +1,11 @@
+Fix the Modal image in modal_app.py before the first deploy (Modal client 1.6.3):
+1. `add_local_dir` is followed by `run_commands`, which Modal only allows with `copy=True`; add it.
+2. It uploads the whole repo. Add an `ignore=` list so only what the server needs is sent: exclude .git, .env, .env.*,
+   **/.venv, **/node_modules, web/dist, android/ (all of it), **/__pycache__, **/.pytest_cache, backend/data, data/,
+   .agents/, docs/research/, and any *.apk/*.aab. Keep backend/ (incl. tests/fixtures/sessions/*.mmrec, packages/
+   schemas), packages/, web/ sources, config/, scripts/.
+3. mmc-secrets will at first hold only MMC_VIN_KEY (the public site is replay-only and needs no API keys); make sure
+   nothing at import or startup requires MODEL_API_KEY or BASETEN_API_KEY in public replay mode, with a test.
+Extend the offline stub test so it asserts copy=True and that the ignore list covers .env, .venv, node_modules and
+android. Run the backend suite (.venv/bin/python -m pytest -q) until green. Do not commit. Foreground commands only.
+Finish with the diff summary.

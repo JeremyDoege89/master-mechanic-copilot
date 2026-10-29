@@ -2,7 +2,7 @@
 
 Targets Modal CLI 1.6.3. The owner runs (token already in place)::
 
-    modal secret create mmc-secrets MODEL_API_KEY=... BASETEN_API_KEY=... MMC_VIN_KEY=...
+    modal secret create mmc-secrets MMC_VIN_KEY=...
     modal deploy modal_app.py
 
 then ``scripts/modal_smoke.sh <printed-url>``.
@@ -37,6 +37,30 @@ MODAL_ENV = {
 }
 
 BUNDLED_FIXTURES = "tests/fixtures/sessions"
+
+# Modal image upload allowlist (via ignore=): the server needs backend/
+# (incl. tests/fixtures/sessions/*.mmrec), packages/, web/ sources,
+# config/ and scripts/. Everything else stays local: VCS, secrets, venvs,
+# tool caches, built assets, the Android tree, device data dirs and
+# research notes. Patterns are Modal add_local_dir ignore globs.
+IMAGE_IGNORE = [
+    ".git",
+    ".env",
+    ".env.*",
+    "**/.venv",
+    "**/node_modules",
+    "web/dist",
+    "android",
+    "android/**",
+    "**/__pycache__",
+    "**/.pytest_cache",
+    "backend/data",
+    "data",
+    ".agents",
+    "docs/research",
+    "**/*.apk",
+    "**/*.aab",
+]
 
 
 def startup_check(data_dir: str) -> dict:
@@ -123,7 +147,7 @@ image = (
         "curl -fsSL https://deb.nodesource.com/setup_24.x | bash -",
         "apt-get install -y nodejs",
     )
-    .add_local_dir(str(REPO_ROOT), remote_path="/opt/mmc")
+    .add_local_dir(str(REPO_ROOT), remote_path="/opt/mmc", copy=True, ignore=IMAGE_IGNORE)
     .run_commands(
         "pip install /opt/mmc/backend",
         "cd /opt/mmc/web && npm ci && npm run build",
