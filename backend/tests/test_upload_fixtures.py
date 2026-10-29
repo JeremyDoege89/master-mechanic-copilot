@@ -11,6 +11,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[2]
 UPLOAD = Path(__file__).parent / "fixtures" / "upload"
 
@@ -26,9 +28,40 @@ def test_upload_fixtures_carry_no_credentials():
         blob = (UPLOAD / name).read_text(encoding="utf-8")
         for banned in BANNED:
             assert banned not in blob, f"{name} contains {banned!r}"
-    blob = (UPLOAD / "sam_video_upload_01.jsonl").read_text(encoding="utf-8")
-    for banned in BANNED:
-        assert banned not in blob
+    for name in ("sam_video_upload_01.jsonl", "sam_video_upload_trimmed.jsonl"):
+        blob = (UPLOAD / name).read_text(encoding="utf-8")
+        for banned in BANNED:
+            assert banned not in blob, f"{name} contains {banned!r}"
+
+
+def test_trimmed_fixture_matches_generator_script():
+    """The 3-frame unit-test copy is byte-identical to what the committed
+    trim script generates from the live 75-frame capture."""
+    import subprocess
+    import sys
+
+    script = ROOT / "scripts" / "trim_sam_video_fixture.py"
+    assert script.exists()
+    proc = subprocess.run(
+        [sys.executable, str(script), "--check"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+def test_trimmed_fixture_holds_first_three_frames():
+    from mmc.meta.client import _stream_text_and_usage
+    from mmc.meta.sam import load_stream_fixture
+
+    events = load_stream_fixture(UPLOAD / "sam_video_upload_trimmed.jsonl")
+    text, usage = _stream_text_and_usage(events)
+    assert usage.get("video_frames_processed") == 3
+    frames = sorted(
+        {int(line[1:].split("f>", 1)[0]) for line in text.split("\n") if line.strip()}
+    )
+    assert frames == [0, 1, 2]
 
 
 def test_live_flags_match_decisions_capture_note():
@@ -77,15 +110,55 @@ def test_live_spark_video_events_parse():
     assert event["sam_concept"] == "hood"
 
 
+@pytest.mark.slow
 def test_live_sam_video_stream_parses():
+    """Full 75-frame live stream: boxes for every frame, masks capped to
+    every 3rd frame (25), converted in the bounded pool.
+
+    Wall target < 25 s on a many-core box (serial was 336 s: 101 s parse +
+    235 s convert); the bound relaxes on small machines where the pool has
+    few workers, but must stay far below the old serial cost.
+    """
+    import os
+    import time
+
     from mmc.meta.client import _stream_text_and_usage
-    from mmc.meta.sam import load_stream_fixture, parse_video_events, result_from_image
+    from mmc.meta.sam import (
+        build_mask_jobs,
+        convert_frame_job,
+        extract_boxes_fast,
+        load_stream_fixture,
+        submit_mask_jobs,
+    )
 
     events = load_stream_fixture(UPLOAD / "sam_video_upload_01.jsonl")
     assert len(events) >= 1
     _text, usage = _stream_text_and_usage(events)
     assert usage.get("video_frames_processed") == 75
-    seg = parse_video_events(events)
-    result = result_from_image("engine", seg)
-    assert result.found is True  # live stream tracks the box on all 75 frames
-    assert len(result.masks) == 75
+    t0 = time.time()
+    boxes = extract_boxes_fast(events)  # request path: no mask decode
+    t_boxes = time.time() - t0
+    assert len(boxes) == 75  # boxes stay per frame
+    assert sorted(b["frame_index"] for b in boxes) == list(range(75))
+    jobs = build_mask_jobs(events, "engine")
+    assert [j["frame_index"] for j in jobs] == list(range(0, 75, 3))  # 25 overlay frames
+    future = submit_mask_jobs(jobs)  # bounded pool: min(16, cpu_count)
+    frame_results = future.result(timeout=600)
+    wall = time.time() - t0
+    assert len(frame_results) == 25
+    masks = [m for r in frame_results for m in r["masks"]]
+    assert len(masks) == 25
+    assert all(m["svg_path"].startswith("M") for m in masks)
+    assert all(m["box"] is not None for m in masks)
+    # Worker boxes for converted frames match the fast scan.
+    fast_by_frame = {b["frame_index"]: b for b in boxes}
+    for result in frame_results:
+        for box in result["boxes"]:
+            assert box == fast_by_frame[box["frame_index"]]
+    # One spot frame converts identically through the sync path.
+    sync_one = convert_frame_job(jobs[0])
+    assert frame_results[0] == sync_one
+    cpus = os.cpu_count() or 1
+    bound = 25.0 if cpus >= 16 else 240.0
+    assert wall < bound, f"75-frame parse+overlays took {wall:.1f}s (bound {bound}s)"
+    assert t_boxes < 5.0

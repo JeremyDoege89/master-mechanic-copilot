@@ -14,12 +14,16 @@ from mmc.upload import video as video_mod
 FIXTURES = Path(__file__).parent / "fixtures" / "upload"
 
 
-def _stream_client(tmp_path, captured: dict):
+TRIMMED = "sam_video_upload_trimmed.jsonl"  # first 3 frames of the live 75-frame capture
+
+
+def _stream_client(tmp_path, captured: dict, name: str = TRIMMED):
     from mmc.meta.client import MetaClient
     from mmc.meta.sam import load_stream_fixture
 
-    # Live captured video stream (75 tracked masks, found=True).
-    events = load_stream_fixture(FIXTURES / "sam_video_upload_01.jsonl")
+    # Trimmed live capture (3 tracked frames, found=True). The full 75-frame
+    # stream runs only under the slow marker (test_upload_fixtures.py).
+    events = load_stream_fixture(FIXTURES / name)
 
     def transport(model: str, kwargs: dict):
         captured["kwargs"] = kwargs
@@ -93,8 +97,10 @@ def test_track_video_sends_file_id_part(tmp_path):
         video_source="file_id",
         video_file_id="file-abc",
     )
-    assert result.found is True  # live stream tracks on all 75 frames
-    assert len(result.masks) == 75
+    assert result.found is True  # trimmed stream tracks on all 3 frames
+    assert len(result.boxes) == 3
+    assert len(result.masks) == 1  # frames 0,1,2 capped to every 3rd frame
+    assert result.masks[0].frame_index == 0
     parts = captured["kwargs"]["input"][0]["content"]
     file_part = next(p for p in parts if p["type"] == "input_file")
     assert file_part == {"type": "input_file", "file_id": "file-abc"}
@@ -107,13 +113,15 @@ def test_track_video_inline_sends_file_data(tmp_path):
         b"\x00\x00\x00\x18ftypisom" + b"\x00" * 64, "clip.mp4", client, concepts=["engine"]
     )
     assert result.found is True
-    assert len(result.masks) == 75
+    assert len(result.boxes) == 3
+    assert len(result.masks) == 1
     parts = captured["kwargs"]["input"][0]["content"]
     file_part = next(p for p in parts if p["type"] == "input_file")
     assert "file_data" in file_part and file_part["filename"] == "clip.mp4"
 
 
-def test_analyze_clip_offline_happy_path():
+def _offline_clip(**kw):
+    """analyze_clip with fully fake seams (no ffmpeg, no network)."""
     calls: dict = {}
 
     class FakeBudget:
@@ -139,9 +147,17 @@ def test_analyze_clip_offline_happy_path():
             {},
         )
 
-    def fake_track(subclip, filename, client, **kw):
+    def fake_track_raw(subclip, filename, client, **kw):
         calls.setdefault("tracks", []).append(kw)
-        return sam_mod.SamResult(concept="pump"), {}
+        # One box-only frame per subclip: no mask decode anywhere here.
+        text = "<0f>0<|box;x1=10;y1=20;x2=30;y2=40;w=1280;h=960|>"
+        return (
+            [
+                {"type": "response.output_text.delta", "delta": text},
+                {"type": "response.output_text.done", "text": text},
+            ],
+            {"request": {"sam_scale": 1.0}},
+        )
 
     out = video_mod.analyze_clip(
         b"\x00\x00\x00\x18ftypisom" + b"\x00" * 64,
@@ -149,15 +165,54 @@ def test_analyze_clip_offline_happy_path():
         FakeClient(),
         upload=fake_upload,
         summarize=fake_summarize,
-        track=fake_track,
+        track_raw=fake_track_raw,
         probe=lambda data, filename: {"duration_s": 3.0, "fps": 30.0, "width": 1280, "height": 960},
         cut=lambda data, filename, a, b: b"subclip",
+        **kw,
     )
+    return out, calls
+
+
+def test_analyze_clip_offline_happy_path():
+    out, calls = _offline_clip()
     assert len(out["events"]) == 2
     assert len(out["overlays"]) == 2
     assert calls["uploaded"] == "clip.mp4"
     assert calls["estimate"] > 0
     assert all(kw["frames"] >= 50 for kw in calls["tracks"])
+    # Boxes return on the request path; the box-only frame has no mask.
+    assert len(out["boxes"]) == 2
+    assert all(o["boxes"] and not o["masks"] for o in out["overlays"])
+    assert all(o["found"] for o in out["overlays"])
+    assert out["overlays"][0]["boxes"][0]["box"] == {
+        "x_min": 10, "y_min": 20, "x_max": 31, "y_max": 41,
+    }
+
+
+def test_analyze_clip_defer_returns_boxes_with_pending_masks():
+    out, _calls = _offline_clip(defer_masks=True)
+    assert out["masks_pending"] is True
+    assert len(out["boxes"]) == 2  # boxes right away, no decode
+    assert all(o["masks"] == [] for o in out["overlays"])
+    assert len(out["_mask_jobs"]) == 2  # one overlay frame per subclip
+    assert all(j["clip_index"] in (0, 1) for j in out["_mask_jobs"])
+
+
+def test_merge_frame_results_folds_masks_into_overlays():
+    overlays = [
+        {"label": "a", "found": False, "boxes": [], "masks": []},
+        {"label": "b", "found": False, "boxes": [], "masks": []},
+    ]
+    frame_results = [
+        {"clip_index": 1, "frame_index": 3,
+         "masks": [{"object_id": "0", "frame_index": 3, "svg_path": "M1"}]},
+        {"clip_index": 0, "frame_index": 0,
+         "masks": [{"object_id": "0", "frame_index": 0, "svg_path": "M0"}]},
+    ]
+    video_mod.merge_frame_results(overlays, frame_results)
+    assert overlays[0]["found"] is True
+    assert [m["frame_index"] for m in overlays[0]["masks"]] == [0]
+    assert [m["frame_index"] for m in overlays[1]["masks"]] == [3]
 
 
 def test_analyze_clip_budget_refusal_spends_nothing():

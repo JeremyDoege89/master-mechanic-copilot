@@ -29,3 +29,6 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+  "slow: full-stream SAM test (seconds to a minute; runs in CI, deselect locally with -m 'not slow')",
+]

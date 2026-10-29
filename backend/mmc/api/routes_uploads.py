@@ -26,7 +26,7 @@ from __future__ import annotations
 import hashlib
 import uuid
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
@@ -72,13 +72,31 @@ class LiveUploadAnalyzer:
 
     def bind(self, session: sess.Session) -> "LiveUploadAnalyzer":
         """Copy with a session-bound client: every Meta call appends its
-        ``llm_call``/``sam_call`` record to this session's event log."""
+        ``llm_call``/``sam_call`` record to this session's event log.
+
+        The bound client keeps the analyzer's transport, budget, models,
+        and replay flags — only the call-logging hook is added.
+        """
         registry = sess.get_registry()
 
         def on_call(record: dict) -> None:
             registry.append(session, record["kind"], record)
 
-        return LiveUploadAnalyzer(MetaClient(on_call=on_call))
+        client = self._client_or_default()
+        return LiveUploadAnalyzer(
+            MetaClient(
+                api_key=getattr(client, "_api_key", None),
+                base_url=client.base_url,
+                models=dict(client.models),
+                budget=client.budget,
+                cache_dir=client.cache_dir,
+                replay_cached=client.replay_cached,
+                transport=getattr(client, "_transport", None),
+                on_call=on_call,
+                sleep=getattr(client, "_sleep", None),
+                timeout_s=client.timeout_s,
+            )
+        )
 
     def extract_pdf(self, data: bytes) -> list[dict]:
         client = self._client_or_default()
@@ -86,8 +104,10 @@ class LiveUploadAnalyzer:
         ranges, _rec = extract_spec_ranges(file_id, client)
         return ranges
 
-    def analyze_video(self, data: bytes, filename: str) -> dict:
-        return video_mod.analyze_clip(data, filename, self._client_or_default())
+    def analyze_video(self, data: bytes, filename: str, defer_masks: bool = False) -> dict:
+        return video_mod.analyze_clip(
+            data, filename, self._client_or_default(), defer_masks=defer_masks
+        )
 
 
 _ANALYZER: UploadAnalyzer = LiveUploadAnalyzer()
@@ -283,14 +303,25 @@ def _submit_derived(
 
 @router.post("/sessions/{session_id}/uploads/video/analyze")
 async def upload_video_analyze(session_id: str, body: VideoAnalyzeBody):
+    import asyncio
+
+    from mmc.api.routes import _broadcast as _push_state
+
     session = _require_session(session_id)
     _require_writable(session)
     data, content_hash = _load_blob(body.blob_ref)
     filename = Path(body.blob_ref).name
     if not filename.endswith((".mp4", ".mov")):
         filename = "upload.mp4"
+    analyzer = _bound_analyzer(session)
     try:
-        out = _bound_analyzer(session).analyze_video(data, filename)
+        if isinstance(analyzer, LiveUploadAnalyzer):
+            # Live path: boxes + events return right away; mask conversion
+            # runs in the bounded pool and lands via the WS state push —
+            # same pattern as the keyframe second-opinion diff.
+            out = analyzer.analyze_video(data, filename, defer_masks=True)
+        else:
+            out = analyzer.analyze_video(data, filename)
     except BudgetExceeded as e:
         raise HTTPException(status_code=402, detail=str(e))
     except ValueError as e:
@@ -300,9 +331,40 @@ async def upload_video_analyze(session_id: str, body: VideoAnalyzeBody):
     registry.append(session, "evidence_added", evidence)
     for obs in video_mod.to_observations(out.get("events", []), evidence["evidence_id"]):
         registry.append(session, "observation_added", obs)
+    pending = bool(out.get("masks_pending")) and bool(out.get("_mask_jobs"))
+    if pending:
+        loop = asyncio.get_running_loop()
+        evidence_id = evidence["evidence_id"]
+        future = video_mod.submit_mask_jobs(out["_mask_jobs"])
+        overlays_now = out.get("overlays", [])
+
+        def _deliver(done: Any) -> None:
+            try:
+                frame_results = done.result()
+            except Exception:
+                return
+            try:
+                finished = video_mod.merge_frame_results(
+                    [dict(o) for o in overlays_now], frame_results
+                )
+            except Exception:
+                return
+            sess.note_video_overlays(
+                session_id,
+                evidence_id,
+                {"overlays": finished, "ts": sess._utc_now()},
+            )
+            try:
+                loop.call_soon_threadsafe(lambda: loop.create_task(_push_state(session_id)))
+            except RuntimeError:
+                pass
+
+        future.add_done_callback(_deliver)
     return {
         "events": out.get("events", []),
+        "boxes": out.get("boxes", []),
         "overlays": out.get("overlays", []),
+        "overlays_pending": pending,
         "evidence_id": evidence["evidence_id"],
     }
 

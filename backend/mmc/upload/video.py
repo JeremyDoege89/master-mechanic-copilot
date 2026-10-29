@@ -79,7 +79,7 @@ def probe_clip(data: bytes, filename: str) -> dict:
         proc = subprocess.run(
             [
                 "ffprobe", "-v", "error", "-select_streams", "v:0",
-                "-show_entries", "stream=width,height,r_duration_rate,duration",
+                "-show_entries", "stream=width,height,avg_frame_rate,r_frame_rate,duration",
                 "-show_entries", "format=duration",
                 "-of", "json", tmp.name,
             ],
@@ -93,7 +93,9 @@ def probe_clip(data: bytes, filename: str) -> dict:
     streams = info.get("streams", [{}])
     stream = streams[0] if streams else {}
     duration = float(info.get("format", {}).get("duration") or stream.get("duration") or 0.0)
-    rate = str(stream.get("r_duration_rate") or stream.get("avg_frame_rate") or "0/1")
+    # NB: the field is r_frame_rate (there is no r_duration_rate); prefer
+    # the container-average rate, which exists on every H.264 MP4/MOV.
+    rate = str(stream.get("avg_frame_rate") or stream.get("r_frame_rate") or "0/1")
     try:
         num, den = rate.split("/")
         fps = float(num) / float(den) if float(den) else 0.0
@@ -161,26 +163,87 @@ def to_observations(events: list[dict], evidence_id: str) -> list[dict]:
     ]
 
 
+def _scale_fast_boxes(boxes: list[dict], factor: float) -> list[dict]:
+    """Scale fast-scan boxes back to the source-clip coordinates."""
+    if factor == 1.0:
+        return boxes
+    scaled = []
+    for entry in boxes:
+        box = entry.get("box") or {}
+        scaled.append(
+            {
+                "frame_index": entry.get("frame_index"),
+                "object_id": entry.get("object_id"),
+                "box": (
+                    {
+                        "x_min": int(round(box["x_min"] * factor)),
+                        "y_min": int(round(box["y_min"] * factor)),
+                        "x_max": int(round(box["x_max"] * factor)),
+                        "y_max": int(round(box["y_max"] * factor)),
+                    }
+                    if box
+                    else None
+                ),
+                "score": entry.get("score"),
+            }
+        )
+    return scaled
+
+
+def merge_frame_results(overlays: list[dict], frame_results: list[dict]) -> list[dict]:
+    """Fold worker ``convert_frame_job`` outputs into their overlay entries.
+
+    Each job carries the ``clip_index`` of its overlay; masks land sorted by
+    frame. ``found`` flips true when any mask arrives.
+    """
+    by_clip: dict[int, list[dict]] = {}
+    for result in frame_results:
+        for mask in result.get("masks", []):
+            by_clip.setdefault(int(result.get("clip_index", 0)), []).append(mask)
+    for index, overlay in enumerate(overlays):
+        masks = sorted(
+            by_clip.get(index, []),
+            key=lambda m: (m.get("frame_index") or 0, str(m.get("object_id"))),
+        )
+        if masks:
+            overlay["masks"] = masks
+            overlay["found"] = True
+    return overlays
+
+
 def analyze_clip(
     data: bytes,
     filename: str,
     client: Any,
-    upload: Callable[..., str] = upload_file,
-    summarize: Callable[..., Any] = summarize_video,
-    track: Callable[..., Any] = sam_mod.track_video,
-    probe: Callable[..., dict] = probe_clip,
-    cut: Callable[..., bytes] = cut_subclip,
+    upload: Callable[..., str] | None = None,
+    summarize: Callable[..., Any] | None = None,
+    track_raw: Callable[..., Any] | None = None,
+    probe: Callable[..., dict] | None = None,
+    cut: Callable[..., bytes] | None = None,
+    defer_masks: bool = False,
 ) -> dict:
     """Full video pipeline: probe → upload → Spark events → SAM tracking.
 
-    Returns ``{events, overlays, evidence}`` (evidence payload without the
-    blob hash — the caller fills ``blob_ref``/``content_hash``). The SAM
-    billing floor is enforced in the estimate, and the budget guard refuses
-    before ANY call when the clip would breach it. Seams (upload/summarize/
-    track/probe/cut) are injectable so routes tests run offline on fixtures.
+    The SAM call returns RAW events; boxes come from a decode-free text
+    scan (:func:`sam.extract_boxes_fast`) so the request path never pays
+    for mask validation/conversion. With ``defer_masks=False`` (unit
+    tests) the capped mask jobs convert inline; with ``True`` (live
+    route) the response carries ``masks_pending=True`` plus picklable
+    ``_mask_jobs`` for the bounded pool, and overlays fill in when the
+    pool finishes. Returns ``{events, overlays, boxes}`` (evidence payload
+    without the blob hash — the caller fills ``blob_ref``/``content_hash``).
+    The SAM billing floor is enforced in the estimate, and the budget guard
+    refuses before ANY call when the clip would breach it. Seams
+    (upload/summarize/track_raw/probe/cut) are late-bound so route tests
+    can monkeypatch them and run offline on fixtures.
     """
+    upload_fn = upload or upload_file
+    summarize_fn = summarize or summarize_video
+    track_raw_fn = track_raw or sam_mod.track_video_raw
+    probe_fn = probe or probe_clip
+    cut_fn = cut or cut_subclip
     sam_mod.check_video_bytes(data, filename)
-    meta = probe(data, filename)
+    meta = probe_fn(data, filename)
     duration = float(meta["duration_s"])
     fps = float(meta["fps"])
     width, height = int(meta["width"]), int(meta["height"])
@@ -192,16 +255,17 @@ def analyze_clip(
         frames
     )
     client.budget.check(estimate)
-    file_id = upload(client, data, filename)
-    parsed, _rec = summarize(file_id, client)
+    file_id = upload_fn(client, data, filename)
+    parsed, _rec = summarize_fn(file_id, client)
     events = pick_events(parsed.get("events", []))
     overlays = []
+    pending_jobs: list[dict] = []
     for ev in events:
         t_start = max(0.0, float(ev.get("t_start_s", 0.0)))
         t_end = min(duration, float(ev.get("t_end_s", duration)))
         if t_end <= t_start:
             continue
-        subclip = cut(data, filename, t_start, t_end)
+        subclip = cut_fn(data, filename, t_start, t_end)
         sub_frames = frames_for(t_end - t_start, fps)
         boxes: list[dict] = []
         if isinstance(ev.get("box_hint"), dict):
@@ -209,21 +273,48 @@ def analyze_clip(
                 boxes = [event_box_pixels(ev["box_hint"], width, height)]
             except (KeyError, TypeError, ValueError):
                 boxes = []
-        result, _rec2 = track(
+        concept = str(ev.get("sam_concept", "tracked object"))
+        raw_events, rec = track_raw_fn(
             subclip, "subclip.mp4", client,
             boxes=boxes or None,
-            concepts=[str(ev.get("sam_concept", "tracked object"))],
+            concepts=[concept],
             frames=sub_frames,
-            size=(width, height) if boxes else None,
+            size=(width, height),
         )
-        overlays.append(
-            {
-                "label": ev.get("label"),
-                "t_start_s": t_start,
-                "t_end_s": t_end,
-                "concept": ev.get("sam_concept"),
-                "found": result.found,
-                "masks": sam_mod.overlays_for_result(result),
-            }
-        )
-    return {"events": events, "overlays": overlays}
+        request = rec.get("request", {}) if isinstance(rec, dict) else {}
+        scale = float(request.get("sam_scale", 1.0) or 1.0)
+        back = 1.0 / scale if scale != 1.0 else 1.0
+        fast_boxes = _scale_fast_boxes(sam_mod.extract_boxes_fast(raw_events), back)
+        entry = {
+            "label": ev.get("label"),
+            "t_start_s": t_start,
+            "t_end_s": t_end,
+            "concept": ev.get("sam_concept"),
+            "found": bool(fast_boxes),
+            "boxes": fast_boxes,
+            "masks": [],
+        }
+        overlays.append(entry)
+        jobs = sam_mod.build_mask_jobs(raw_events, concept, coord_scale=back)
+        for job in jobs:
+            job["clip_index"] = len(overlays) - 1
+        if defer_masks:
+            pending_jobs.extend(jobs)
+        else:
+            merge_frame_results(
+                overlays, [sam_mod.convert_frame_job(job) for job in jobs]
+            )
+    out = {
+        "events": events,
+        "overlays": overlays,
+        "boxes": [box for overlay in overlays for box in overlay["boxes"]],
+    }
+    if defer_masks:
+        out["masks_pending"] = True
+        out["_mask_jobs"] = pending_jobs
+    return out
+
+
+def submit_mask_jobs(jobs: list[dict], executor: Any = None) -> Any:
+    """Hand deferred mask jobs to the bounded pool (one Future, all jobs)."""
+    return sam_mod.submit_mask_jobs(jobs, executor)

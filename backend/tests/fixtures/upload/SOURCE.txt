@@ -26,3 +26,9 @@ M5U upload fixtures — provenance (all self-generated, no service-manual pages)
   sam_concept hood). SAM video: BOTH inline input_file and Files API
   file_id parts accepted (75 masks each); sam.track_video defaults to
   video_source="inline" (no extra upload round-trip), file_id kept as option.
+- sam_video_upload_trimmed.jsonl: GENERATED (scripts/
+  trim_sam_video_fixture.py from sam_video_upload_01.jsonl, deterministic).
+  First 3 frames (<0f>-<2f>) verbatim, minimal 5-event Responses envelope,
+  usage video_frames_processed=3. Unit tests use this copy; only the
+  slow-marked full-stream test reads the 75-frame original. Freshness is
+  enforced by test_trimmed_fixture_matches_generator_script (--check).

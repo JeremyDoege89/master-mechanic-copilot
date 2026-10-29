@@ -1,0 +1,21 @@
+The plan in .agents/plans/M6.md is approved with these corrections:
+1. Wonder input: besides the finished report JSON, give it what it needs to audit the reasoning: the explanation trace
+   per hypothesis, the missing_evidence list, blocked tests with reasons, second-opinion disagreements and any Spark
+   Open fallback use. Its schema may point to gaps by test_ref/evidence_id; it still never changes posteriors.
+2. Your sandbox has no network: write modal_app.py and scripts/modal_smoke.sh and test them offline (import the app
+   module with a stub `modal` if the package isn't importable, and test the FastAPI wiring directly). I run
+   `modal secret create` and `modal deploy` myself afterwards. Modal CLI 1.6.3 is installed for me; target its API.
+3. Public mode: keep MMC_PUBLIC_MODE=replay as the Modal default, and add an optional judge live demo that is OFF by
+   default: MMC_PUBLIC_LIVE_BUDGET_USD (default 0 = off). When > 0, public sessions may run photo keyframe analysis and
+   instrument reading only, against a separate tracker capped at that amount, with a per-IP rate limit (e.g. 10 paid
+   calls/hour) and the budget badge showing the public cap. Wonder, SAM video and uploads of video stay off in public.
+4. Engine-sound evidence (from M5O) appears in the report's expected-vs-measured table with its DSP numbers, labelled
+   as signal processing, not AI.
+5. A SAM performance fix (m5-perf) has just landed in meta/sam.py and the vision routes; build on it, don't revert it.
+   Keep the full backend suite under 3 minutes.
+
+Implement the plan in its order, each step with its test before the next. Keep all existing tests green. Run the
+plan's verification commands except `modal deploy` (backend via .venv/bin/python -m pytest -q; Android offline with
+GRADLE_USER_HOME seeded from ~/.gradle; web with npm ci from the local cache if the registry is unreachable, and say so if
+it is blocked), fix failures until they pass, add a dated docs/DECISIONS.md entry, and do not commit. Run commands in the
+foreground. Finish with files created/changed, test counts and pass/fail of each command.

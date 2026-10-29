@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import threading
 import uuid
 from datetime import datetime, timezone
 from functools import lru_cache
@@ -53,6 +54,28 @@ def vision_second_opinions(session_id: str) -> list[dict]:
     return [
         {"evidence_id": eid, **view}
         for eid, view in _VISION_SECOND_OPINIONS.get(session_id, {}).items()
+    ]
+
+
+# Deferred video overlays keyed by session then evidence id. Display-only,
+# like second opinions: compute_state folds only test_result events, so
+# posteriors are bit-identical with or without them. The upload route
+# returns boxes right away; pool-converted masks land here when ready and
+# reach the UI through the next WS state push.
+_VIDEO_OVERLAYS: dict[str, dict[str, dict]] = {}
+_VIDEO_OVERLAYS_LOCK = threading.Lock()
+
+
+def note_video_overlays(session_id: str, evidence_id: str, view: dict) -> None:
+    """Stash finished video overlays (masks) for one clip's evidence."""
+    with _VIDEO_OVERLAYS_LOCK:
+        _VIDEO_OVERLAYS.setdefault(session_id, {})[evidence_id] = dict(view)
+
+
+def video_overlays(session_id: str) -> list[dict]:
+    return [
+        {"evidence_id": eid, **view}
+        for eid, view in _VIDEO_OVERLAYS.get(session_id, {}).items()
     ]
 
 
@@ -327,6 +350,7 @@ def compute_state(session: Session) -> dict:
         "session_id": session.id,
         "vehicle": session.meta.get("vehicle"),
         "vision_second_opinions": vision_second_opinions(session.id),
+        "video_overlays": video_overlays(session.id),
         "hypotheses": hypotheses,
         "next_tests": next_tests,
         "blocked_tests": [

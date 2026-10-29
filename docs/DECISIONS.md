@@ -2,6 +2,78 @@
 
 Newest first. Each entry: date, decision, why. Add one whenever scope, a dependency or an architecture choice changes.
 
+## 2026-10-29 — SAM mask-decode performance fix (decode-once + 640 px + pool)
+
+- Profiling (cProfile + wall probes, live fixture
+  `backend/tests/fixtures/upload/sam_video_upload_01.jsonl`, 75 frames at
+  1280x960, 7.7 MB): the parser validates every mask at parse time with one
+  pure-Python raster decode (~1.4 s each: `parse_video_events` 101.3 s for
+  75 masks), and our `sam.result_from_image` then decoded each mask TWICE
+  more (`decode_mask_to_rle` + `decode_mask_to_svg_path`, the SVG helper
+  re-decoding through the RLE path: 235.0 s, 150 raster decodes for 75
+  masks). Total 336 s; `test_live_sam_video_stream_parses` took 355 s and
+  the `test_upload_video.py` full-stream tests hung for minutes each.
+- Fix 1, decode once (`backend/mmc/meta/sam.py::rle_and_svg`): one
+  `decode_mask_to_rle` per mask, SVG from that RLE via the library's own
+  RLE->SVG step (`meta_sam_parser._mask_conversion._decode_to_svg_path`,
+  takes the RLE object, never touches the raster codec — reachable without
+  re-decoding, so no private-codec fork; the installed library is
+  untouched). Output is byte-equal to the old two-call path (asserted in
+  `test_svg_derives_from_the_single_rle`). `test_result_from_image_decodes_
+  each_mask_once` counts raster decodes with a wrapper: 3 (validation) + 3
+  (conversion) on the battery fixture, was 3 + 6.
+- Fix 2, smaller media: `downscale_image`/`downscale_video` cap the long
+  side at `SAM_MAX_SIDE = 640` (ffmpeg; Pillow is not installed, so ffmpeg
+  for images too; H.264/yuv420p, fps kept, audio dropped). Boxes/points go
+  into the prompt in sent coordinates, result boxes/SVG scale back to
+  source coordinates (`coord_scale`, `scale_svg_path`), and the record
+  carries `sam_scale` + `orig_size`/`sent_size` + `orig_bytes`. Cost
+  unchanged (SAM bills per image/frame). Undecodable/small/tool-less input
+  passes through with `sam_scale = 1.0`, never an error. Decode is ~85k
+  px/s pure Python (122k-px mask: 1.43 s raster, 1.79 s RLE+SVG), so a
+  640-px keyframe mask decodes in ~0.3-0.4 s — back inside the < 3 s
+  keyframe->labels budget.
+- Fix 3, video masks off the request path: `track_video_raw` returns raw
+  events (no parse), `extract_boxes_fast` scans box tokens from the stream
+  text with zero mask decodes (proven equal to the official parser's boxes
+  on the trimmed fixture AND the multi-object battery image stream — whose
+  grammar chains objects comma-separated, `,1<|box...>`, with no repeated
+  frame header), and capped mask jobs (`build_mask_jobs`: every 3rd frame,
+  at most 25; boxes stay per frame) convert in a bounded
+  `ProcessPoolExecutor(min(16, cpu_count))` via the picklable
+  `convert_frame_job` (official per-frame parse + single-decode convert in
+  the worker). The upload route returns boxes+events immediately with
+  `overlays_pending`, stashes finished masks via
+  `sessions.note_video_overlays` (new `video_overlays` state key, posteriors
+  bit-identical), and pushes the WS state diff — same pattern as the second
+  opinion. `SamResult` gains per-frame `boxes` (+ `frame_index` on masks);
+  `result_from_image` applies the same caps synchronously.
+- Fixtures/tests: `scripts/trim_sam_video_fixture.py` (committed,
+  deterministic, `--check` enforced by
+  `test_trimmed_fixture_matches_generator_script`) keeps the first 3 frames
+  (172 KB) in `sam_video_upload_trimmed.jsonl`; unit tests use it, the full
+  75-frame stream runs under a new `slow` marker (pyproject; CI's plain
+  `pytest -q` still runs it once). New `backend/tests/test_sam_perf.py`
+  (17 tests: single-decode count, caps, fast-vs-parser boxes, downscale +
+  scale-back, pool bound, 2.5 s single-mask bound).
+- Two latent bugs found by the new tests (both ours, both fixed): (1)
+  `upload/video.py::probe_clip` asked ffprobe for `r_duration_rate`, which
+  does not exist, so fps always parsed as 0 and EVERY real probe failed —
+  now `avg_frame_rate`/`r_frame_rate`; (2)
+  `routes_uploads.LiveUploadAnalyzer.bind` rebuilt a default `MetaClient`,
+  dropping the analyzer's transport/budget/replay flags (live route could
+  never use an injected client) — now propagates like the vision bind.
+- Numbers (40-core box, wall): full 75-frame parse+overlays 336 s -> 10.0 s
+  (pool, < 25 s target); `test_upload_video` + `test_upload_routes`
+  15.7 s; `test_vision_parse` + `test_vision_routes` + fast fixtures
+  44.1 s (was 41 + 25 s); `test_sam_perf` 31.5 s; FULL backend suite
+  306 passed + 1 skipped in 120 s (before: estimated ~25-30 min from
+  the reported per-file costs — 355 s fixture test plus four full-stream
+  upload_video tests at ~340 s each — never run end-to-end; target < 3 min).
+  replay_check OK (sim-healthy.mmrec). Android
+  offline (seeded GRADLE_USER_HOME, Gradle 8.10.2, --offline): 80 unit
+  tests, 0 failures; assembleDebug green.
+
 ## 2026-10-29 — M5O (Spark Open second opinion + fallback + engine-sound DSP) + phone recorder
 
 - Sibling client, not subclass: `MetaClient` is Responses-shaped while

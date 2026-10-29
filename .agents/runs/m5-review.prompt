@@ -1,4 +1,4 @@
-You are reviewing, not building. Do not edit any file except .agents/reviews/M5-M5U.md.
+You are reviewing, not building. Do not create or edit any file.
 
 Review the M5 (vision), M5U (upload mode) and M5O (Spark Open via Baseten, second opinion, fallback, engine-sound DSP)
 work: `git diff b9b1a9a -- backend packages android scripts` plus any uncommitted changes (`git status`). Check against AGENTS.md hard constraints and docs/SPEC.md §5 and §7:
@@ -10,5 +10,5 @@ work: `git diff b9b1a9a -- backend packages android scripts` plus any uncommitte
 - budget guard holes: any paid call path that skips the hard stop or logs a cost of 0;
 - tests that pass without checking the real behaviour.
 Run commands in the foreground only (no background shells or subagents); you may run single test files but
-the full suite is already green. Write .agents/reviews/M5-M5U.md: findings ranked most severe first, each with file:line, the concrete failure
+the full suite is already green. Give the review as your final answer (it is saved for you): findings ranked most severe first, each with file:line, the concrete failure
 scenario, and the fix. Only real findings you verified by reading the code; no style nits. End with a one-line verdict.

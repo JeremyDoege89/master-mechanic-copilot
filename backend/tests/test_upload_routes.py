@@ -158,6 +158,96 @@ def test_oversize_upload_413(client, monkeypatch):
     assert r.status_code == 413
 
 
+def _write_clip(path, width: int = 320, height: int = 240) -> bytes:
+    import subprocess
+
+    proc = subprocess.run(
+        [
+            "ffmpeg", "-y", "-v", "error",
+            "-f", "lavfi", "-i", f"testsrc=size={width}x{height}:rate=10:duration=1",
+            "-c:v", "libx264", "-pix_fmt", "yuv420p", str(path),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, proc.stderr[:300]
+    return path.read_bytes()
+
+
+def test_live_video_analyze_returns_boxes_then_masks(client, tmp_path, monkeypatch):
+    """Deferred live path: boxes + events return right away with
+    overlays_pending; pool-converted masks land in session state (the WS
+    push payload) without moving posteriors."""
+    import time
+
+    from mmc import sessions as sess_mod
+    from mmc.meta.budget import BudgetTracker
+    from mmc.meta.client import MetaClient
+    from mmc.meta.sam import load_stream_fixture
+    from mmc.upload import video as video_mod
+
+    sam_events = load_stream_fixture(FIXTURES / "sam_video_upload_trimmed.jsonl")
+
+    def transport(model: str, kwargs: dict):
+        assert model == "sam-3.1"
+        return [dict(e) for e in sam_events]
+
+    fake_client = MetaClient(
+        api_key="test-key-not-a-secret",
+        models={"spark": "muse-spark-1.3", "sam": "sam-3.1"},
+        budget=BudgetTracker(hard_stop_usd=120.0),
+        cache_dir=tmp_path / "cache",
+        replay_cached=False,
+        transport=transport,
+        sleep=lambda s: None,
+    )
+    routes_uploads.set_analyzer(routes_uploads.LiveUploadAnalyzer(fake_client))
+    monkeypatch.setattr(video_mod, "upload_file", lambda client, data, filename: "file-1")
+    monkeypatch.setattr(
+        video_mod,
+        "summarize_video",
+        lambda file_id, client: (
+            {"events": [
+                {"t_start_s": 0.0, "t_end_s": 0.5, "label": "Idle", "sam_concept": "engine"}
+            ]},
+            {},
+        ),
+    )
+    try:
+        sid = _create_session(client)
+        before = client.get(f"/sessions/{sid}/state").json()["hypotheses"]
+        clip = _write_clip(tmp_path / "clip.mp4")
+        up = _upload(client, sid, clip, "clip.mp4", "video")
+        r = client.post(f"/sessions/{sid}/uploads/video/analyze", json={"blob_ref": up["blob_ref"]})
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert len(body["events"]) == 1
+        assert len(body["boxes"]) == 3  # trimmed stream: boxes for all 3 frames
+        assert body["overlays_pending"] is True
+        assert body["overlays"][0]["masks"] == []
+        evidence_id = body["evidence_id"]
+        deadline = time.time() + 180
+        landed: list[dict] = []
+        while time.time() < deadline:
+            landed = sess_mod.video_overlays(sid)
+            if landed:
+                break
+            time.sleep(0.5)
+        assert landed, "pool-converted masks never landed in session state"
+        assert landed[0]["evidence_id"] == evidence_id
+        masks = landed[0]["overlays"][0]["masks"]
+        assert len(masks) == 1  # frames 0,1,2 capped to every 3rd frame
+        assert masks[0]["svg_path"].startswith("M")
+        state = client.get(f"/sessions/{sid}/state").json()
+        assert len(state["video_overlays"]) == 1
+        after = state["hypotheses"]
+        for b, a in zip(before, after):
+            assert b["current"] == pytest.approx(a["current"])
+    finally:
+        routes_uploads.set_analyzer(routes_uploads.LiveUploadAnalyzer())
+
+
 def test_replay_session_processing_routes_stay_readonly(client):
     sid = _create_session(client, mode="replay")
     pdf = (FIXTURES / "upload_spec_test.pdf").read_bytes()
