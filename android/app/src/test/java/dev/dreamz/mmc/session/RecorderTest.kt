@@ -69,6 +69,61 @@ class RecorderTest {
     }
 
     @Test
+    fun failureFlushKeepsTranscriptAndErrorMarker() {
+        val rec = Recorder()
+        rec.recordTx("010C")
+        rec.recordRx("7E804410C1AF8\r\r>")
+        val file = java.io.File.createTempFile("recorder-failure", ".mmrec")
+        try {
+            rec.writeFailureMmrec(
+                file,
+                metaJson = """{"format":"mmrec/1","failed":true}""",
+                error = "live flow failed: no data for PID 0c",
+            )
+            val text = Recorder.readMember(file, "transcript.jsonl").toString(Charsets.UTF_8)
+            assertTrue(text.contains("\"dir\":\"tx\""))
+            assertTrue(text.contains("\"dir\":\"rx\""))
+            assertTrue(text.contains("\"dir\":\"error\""))
+            assertTrue(text.contains("live flow failed"))
+            val manifest = Recorder.readMember(file, "manifest.json").toString(Charsets.UTF_8)
+            assertTrue(manifest.contains(Recorder.sha256(Recorder.readMember(file, "transcript.jsonl"))))
+            // Replay still feeds the tx/rx pairs, skipping the error row.
+            val events = ReplayTransport.parseTranscriptJsonl(text)
+            assertEquals(1, events.size)
+            assertEquals("010C", events[0].request)
+        } finally {
+            file.delete()
+        }
+    }
+
+    @Test
+    fun rxLinesLogWithVinMaskedToLast6() {
+        val seen = mutableListOf<String>()
+        Recorder.trafficLog = { seen.add(it) }
+        try {
+            val rec = Recorder()
+            rec.recordTx("0902") // commands carry no VIN: nothing logged
+            rec.recordRx("7E810144902014A4D31\r7E821424D394D373253\r\r>")
+            rec.recordRx("VIN JM1BM9M72S1000001 ok\r\r>")
+        } finally {
+            Recorder.resetTrafficLog()
+        }
+        assertTrue(seen.any { it.startsWith("7E8") })
+        assertTrue("no raw VIN may reach the log: $seen", seen.none { it.contains("JM1BM9M72S1000001") })
+        assertTrue("last 6 kept: $seen", seen.any { it.contains("····000001") })
+    }
+
+    @Test
+    fun vinMaskingKeepsLast6AndLeavesHexAlone() {
+        assertEquals("····000001", Recorder.maskVins("JM1BM9M72S1000001"))
+        assertEquals("VIN ····000001 ok", Recorder.maskVins("VIN JM1BM9M72S1000001 ok"))
+        // Packed hex runs are never masked (no non-hex letter / bounded).
+        assertEquals("7E804410C1AF8", Recorder.maskVins("7E804410C1AF8"))
+        assertEquals("7E810144902014A4D31", Recorder.maskVins("7E810144902014A4D31"))
+        assertEquals("014A4D31424D394D3", Recorder.maskVins("014A4D31424D394D3"))
+    }
+
+    @Test
     fun replayTransportRefeedReproducesTranscript() {
         val rec = Recorder()
         val script = listOf(

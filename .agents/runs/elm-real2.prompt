@@ -1,0 +1,25 @@
+RESUME: a previous run of this exact task was cut off by an API billing error partway through. Its partial edits are in the working tree (git diff android/app/src/main/java/dev/dreamz/mmc/elm/ session/Recorder.kt and the tests). Review them, finish the task, and make everything pass. Be economical: read only the files you need.
+
+First real-vehicle run (Mazda 3, genuine-profile ELM327 over Bluetooth Classic) — logcat tag MMC:
+  BT connected -> ATZ -> "Protocol: genuine ISO 15765-4 CAN 11/500" -> "Reading VIN (Mode 09)…"
+  "VIN read failed: For input string: "<redacted>014A4D31" under radix 16"   (4A 4D 31 = "JM1", Mazda's WMI)
+  session created -> "Reading live data (rpm, coolant, airflow)…"
+  "live flow failed: For input string: "<redacted>01000000" under radix 16" (and another "…E7000000")
+Diagnosis: the init sends ATS0 (spaces off) with ATH1 (headers on), so a real ELM327 answers with hex run together
+(e.g. "7E8064100BE3FA813" / ISO-TP "7E810144902014A4D31"), but Parsers splits on spaces and Integer.parseInt()s whole
+tokens, which overflows. Elm327Sim always emits spaced bytes, so no test caught it — fix the sim too.
+Fix (android/app/src/main/java/dev/dreamz/mmc/elm/):
+1. Parsers must accept both spaced and space-less responses: strip whitespace per line, take the CAN header by protocol
+   (3 hex chars for 11-bit, 8 for 29-bit when headers are on; none when off), then the PCI/length byte(s), then split the
+   rest into 2-char bytes. Handle single-frame, first-frame ("10 14 ..."), consecutive frames ("21 ..", "22 .."), the
+   "0:/1:" ELM-formatted ISO-TP lines, multiple ECUs (7E8/7E9), SEARCHING..., NO DATA, and the trailing ">".
+2. Elm327Sim honours ATS0/ATS1 and ATH0/ATH1 like a real adapter (default spaces on until ATS0), so the golden tests run
+   in the real configuration. Add golden transcripts in backend/tests/fixtures/transcripts AND JVM tests for: Mode 01
+   PIDs 0C/05/10/0D with ATS0+ATH1, Mode 09 PID 02 VIN multi-frame with ATS0+ATH1 (use a SYNTHETIC VIN with the JM1
+   prefix — never the owner's real VIN, the repo is public), Mode 03 DTCs, and two ECUs answering.
+3. The backend's Python transcript parsers (parity) must accept the same space-less format; extend their tests.
+4. Recorder: flush the .mmrec (transcript so far + error event) when a live flow fails, so field failures leave a
+   recording. Log each raw adapter response line to logcat tag MMC with any 17-char VIN masked to its last 6.
+The allowlist and Elm327Driver's safety checks stay unchanged. A parallel job (bt-fix) is editing ui/MmcApp.kt and the
+Bluetooth connect code; don't touch those files. Run Android unit tests + assembleDebug offline (seeded
+GRADLE_USER_HOME), the backend suite, ci_parity.sh. Do not commit. Foreground only.

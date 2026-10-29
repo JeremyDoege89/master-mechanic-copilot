@@ -90,21 +90,65 @@ def _decode_dtcs_kotlin_rule(payload: bytes) -> list[str]:
     return out
 
 
+_HEX = frozenset("0123456789ABCDEFabcdef")
+
+_ERROR_LINES = frozenset({
+    "NO DATA", "CAN ERROR", "BUS INIT: ...ERROR", "BUS INIT: ERROR",
+    "BUFFER FULL", "STOPPED", "UNABLE TO CONNECT", "?",
+})
+
+
+def _drop_pci(payload: bytes) -> bytes:
+    """Python mirror of Parsers.dropPciLength (length byte counts the rest)."""
+    if payload and payload[0] == len(payload) - 1:
+        return payload[1:]
+    return payload
+
+
+def _obd_data_line(line: str) -> tuple[str | None, bytes] | None:
+    """Python mirror of Parsers.parseDataLine (spaced or ATS0-packed).
+
+    Returns (can_id, payload) or None for blank/SEARCHING.../typed-error
+    lines. Accepts ELM "N:" numbered lines, spaced "7E8 04 ..." lines and
+    space-less "7E804..." lines, with or without the CAN-id header.
+    """
+    t = line.strip()
+    if not t or t == "SEARCHING..." or t.upper() in _ERROR_LINES:
+        return None
+    if len(t) >= 2 and t[1] == ":" and t[0] in _HEX:
+        return None, _drop_pci(bytes.fromhex("".join(t[2:].split())))
+    compact = "".join(t.split())
+    if any(c.isspace() for c in t):
+        toks = t.split()
+        if len(toks) >= 2 and len(toks[0]) == 3 and all(c in _HEX for c in toks[0]):
+            return toks[0].upper(), _drop_pci(bytes.fromhex(compact[3:]))
+        return None, _drop_pci(bytes.fromhex(compact))
+    if (
+        len(compact) > 3
+        and all(c in _HEX for c in compact[:3])
+        and len(compact[3:]) >= 2
+        and len(compact[3:]) % 2 == 0
+        and all(c in _HEX for c in compact[3:])
+    ):
+        return compact[:3].upper(), _drop_pci(bytes.fromhex(compact[3:]))
+    return None, _drop_pci(bytes.fromhex(compact))
+
+
 def _transcript_dtcs(raw: bytes) -> list[str]:
     """DTCs a ReplayTransport playback would show for a Mode 03 response."""
     rows = [json.loads(line) for line in raw.splitlines()]
     codes: list[str] = []
     for i, row in enumerate(rows):
         if row.get("dir") == "tx" and row.get("data") == "03":
-            rx = rows[i + 1]["data"].replace("\r", "").replace(">", "").strip().split()
-            assert rx[0] == "43", rx
-            payload = bytearray()
-            for tok in rx[1:]:
-                if len(tok) == 4:
-                    payload += bytes((int(tok[:2], 16), int(tok[2:], 16)))
-                else:
-                    payload.append(int(tok, 16))
-            codes = [c for c in _decode_dtcs_kotlin_rule(bytes(payload)) if c != "P0000"]
+            rx_data = rows[i + 1]["data"].replace("\r", "\n").replace(">", "")
+            for line in rx_data.split("\n"):
+                parsed = _obd_data_line(line)
+                if parsed is None:
+                    continue
+                _can_id, payload = parsed
+                if payload[:1] == b"\x43":
+                    cells = _decode_dtcs_kotlin_rule(bytes(payload[1:]))
+                    codes = [c for c in cells if c != "P0000"]
     return codes
 
 
@@ -125,6 +169,49 @@ def test_synth_transcript_dtc_cells_decode_to_snapshot_dtcs():
         assert _transcript_dtcs(raw) == want
         if sim == "coil_unplugged":
             assert want == ["P0303"]
+
+def _transcript_bytes(pairs: list[tuple[str, str]]) -> bytes:
+    rows = [
+        json.dumps({"t": 85 * k, "dir": direction, "data": data},
+                   sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\n"
+        for k, (direction, data) in enumerate(pairs)
+    ]
+    return b"".join(rows)
+
+
+def test_transcript_dtcs_accepts_spaceless_field_shapes():
+    """ATS0+ATH1 parity: packed replies decode like the spaced ones."""
+    # Packed with 11-bit header (Mazda 3 field shape).
+    raw = _transcript_bytes([("tx", "03"), ("rx", "7E8054301330203\r\r>")])
+    assert _transcript_dtcs(raw) == ["P0133", "P0203"]
+    # Packed, headers off.
+    raw = _transcript_bytes([("tx", "03"), ("rx", "054301330203\r\r>")])
+    assert _transcript_dtcs(raw) == ["P0133", "P0203"]
+    # Legacy spaced shapes still decode.
+    raw = _transcript_bytes([("tx", "03"), ("rx", "7E8 05 43 01 33 02 03\r\r>")])
+    assert _transcript_dtcs(raw) == ["P0133", "P0203"]
+    raw = _transcript_bytes([("tx", "03"), ("rx", "43 01 33 02 03\r\r>")])
+    assert _transcript_dtcs(raw) == ["P0133", "P0203"]
+    # SEARCHING... prefix and prompt framing are tolerated.
+    raw = _transcript_bytes([("tx", "03"), ("rx", "SEARCHING...\r7E8054301330203\r\r>")])
+    assert _transcript_dtcs(raw) == ["P0133", "P0203"]
+    # NO DATA yields no codes instead of raising.
+    raw = _transcript_bytes([("tx", "03"), ("rx", "NO DATA\r\r>")])
+    assert _transcript_dtcs(raw) == []
+
+
+def test_obd_data_line_parity_mirrors_kotlin():
+    """_obd_data_line matches Parsers.parseDataLine on every line shape."""
+    assert _obd_data_line("7E8 04 41 0C 1A F8") == ("7E8", bytes((0x41, 0x0C, 0x1A, 0xF8)))
+    assert _obd_data_line("7E804410C1AF8") == ("7E8", bytes((0x41, 0x0C, 0x1A, 0xF8)))
+    assert _obd_data_line("04410C1AF8") == (None, bytes((0x41, 0x0C, 0x1A, 0xF8)))
+    assert _obd_data_line("0: 14 49 02 01 31 46 41 54 50 38") == (
+        None, bytes((0x14, 0x49, 0x02, 0x01, 0x31, 0x46, 0x41, 0x54, 0x50, 0x38)),
+    )
+    assert _obd_data_line("NO DATA") is None
+    assert _obd_data_line("SEARCHING...") is None
+    assert _obd_data_line("") is None
+
 
 def test_generator_fails_fast_without_demo_cache(tmp_path):
     """Correction 2: no cache -> loud failure naming record_demo_cache.py."""

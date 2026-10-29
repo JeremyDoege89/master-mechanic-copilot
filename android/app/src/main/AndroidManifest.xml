@@ -7,6 +7,22 @@
          Requested at runtime when the user taps record, never at startup. -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
+    <!-- On-vehicle Bluetooth Classic (ELM327 SPP). API 31+ uses the runtime
+         BLUETOOTH_CONNECT permission (requested when the user taps Connect);
+         BLUETOOTH_SCAN is declared for completeness with neverForLocation
+         (the app only lists already-paired devices, it never scans).
+         Legacy install-time permissions apply to API 30 and below only. -->
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission
+        android:name="android.permission.BLUETOOTH_SCAN"
+        android:usesPermissionFlags="neverForLocation" />
+    <uses-permission
+        android:name="android.permission.BLUETOOTH"
+        android:maxSdkVersion="30" />
+    <uses-permission
+        android:name="android.permission.BLUETOOTH_ADMIN"
+        android:maxSdkVersion="30" />
+
     <application
         android:allowBackup="true"
         android:usesCleartextTraffic="${usesCleartext}"

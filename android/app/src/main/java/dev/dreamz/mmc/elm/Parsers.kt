@@ -42,8 +42,16 @@ object Parsers {
      * Parse one raw adapter reply (prompt '>' framing).
      * Strips SEARCHING... lines, maps error strings to [ErrorKind],
      * and splits data lines into per-ECU byte payloads.
+     *
+     * Accepts both spaced ("7E8 04 41 0C 1A F8") and space-less
+     * ("7E804410C1AF8") responses: with ATS0 the adapter runs the bytes
+     * together, and splitting a packed line on spaces yields one long token
+     * that overflows Integer.parseInt (Mazda 3 field log).
+     *
+     * @param headersOn false when the adapter runs ATH0 (no CAN-id prefix).
+     * @param headerChars 3 for 11-bit CAN ids, 8 for 29-bit (ATDPN A7).
      */
-    fun frame(raw: String): ElmResult {
+    fun frame(raw: String, headersOn: Boolean = true, headerChars: Int = 3): ElmResult {
         val noPrompt = raw.substringBefore(">").replace("\r", "\n")
         val lines = noPrompt.lines().map { it.trim() }.filter { it.isNotEmpty() && it != "SEARCHING..." }
         if (lines.isEmpty()) return ElmResult.TypedError(ErrorKind.NO_DATA)
@@ -52,25 +60,81 @@ object Parsers {
                 if (line.equals(text, ignoreCase = true)) return ElmResult.TypedError(kind)
             }
         }
-        return ElmResult.Data(lines.map { parseDataLine(it) })
+        return ElmResult.Data(lines.map { parseDataLine(it, headersOn, headerChars) })
     }
 
-    private fun parseDataLine(line: String): EcuLine {
-        val tokens = line.split(Regex("\\s+")).filter { it.isNotEmpty() }
-        if (tokens.size >= 2 && tokens[0].length == 3 && tokens[0].all { it.isDigit() || it in 'A'..'F' }) {
-            val rest = tokens.drop(1).joinToString(" ")
-            val bytes = hexBytes(rest)
-            // First byte is the PCI/length byte when headers are on; keep payload after it
-            // if it plausibly counts the remaining bytes.
-            val payload = if (bytes.isNotEmpty() && (bytes[0].toInt() and 0xFF) == bytes.size - 1) bytes.drop(1).toByteArray() else bytes
-            return EcuLine(tokens[0], payload)
+    private fun Char.isHexDigit(): Boolean =
+        this in '0'..'9' || this in 'A'..'F' || this in 'a'..'f'
+
+    private fun isCanId(token: String, headerChars: Int): Boolean =
+        token.length == headerChars && token.all { it.isHexDigit() }
+
+    private fun dropPciLength(bytes: ByteArray): ByteArray {
+        // First byte is the PCI/length byte; keep payload after it if it
+        // plausibly counts the remaining bytes.
+        return if (bytes.isNotEmpty() && (bytes[0].toInt() and 0xFF) == bytes.size - 1) {
+            bytes.drop(1).toByteArray()
+        } else {
+            bytes
         }
-        return EcuLine(null, hexBytes(line))
+    }
+
+    private fun parseDataLine(line: String, headersOn: Boolean, headerChars: Int): EcuLine {
+        val trimmed = line.trim()
+        // ELM "N:" numbered ISO-TP format ("0: 14 49 02 ..." / "0:144902..."):
+        // no CAN id, payload is everything after the colon.
+        val colon = trimmed.indexOf(':')
+        if (colon == 1 && trimmed[0].isHexDigit()) {
+            return EcuLine(null, dropPciLength(hexBytes(trimmed.substring(colon + 1))))
+        }
+        if (trimmed.any { it.isWhitespace() }) {
+            val tokens = trimmed.split(Regex("\\s+")).filter { it.isNotEmpty() }
+            if (headersOn && tokens.size >= 2 && isCanId(tokens[0], headerChars)) {
+                return EcuLine(tokens[0].uppercase(), dropPciLength(hexBytes(tokens.drop(1).joinToString(""))))
+            }
+            return EcuLine(null, dropPciLength(hexBytes(trimmed)))
+        }
+        val compact = trimmed
+        if (headersOn && compact.length > headerChars &&
+            isCanId(compact.substring(0, headerChars), headerChars)
+        ) {
+            val rest = compact.substring(headerChars)
+            if (rest.length >= 2 && rest.length % 2 == 0 && rest.all { it.isHexDigit() }) {
+                return EcuLine(compact.substring(0, headerChars).uppercase(), dropPciLength(hexBytes(rest)))
+            }
+        }
+        return EcuLine(null, dropPciLength(hexBytes(compact)))
+    }
+
+    /**
+     * Remainder of one data line after its CAN-id header, for the ISO-TP
+     * reassembly path ([Elm327Driver.queryMode06]/[queryVin]). Handles spaced
+     * ("7E8 10 11 ..."), packed ("7E81011...") and header-less lines, and
+     * passes ELM "N:" numbered lines through untouched.
+     */
+    fun stripCanHeader(line: String, headersOn: Boolean = true, headerChars: Int = 3): String {
+        val trimmed = line.trim()
+        if (!headersOn) return trimmed
+        val colon = trimmed.indexOf(':')
+        if (colon == 1 && trimmed[0].isHexDigit()) return trimmed
+        val space = trimmed.indexOfFirst { it.isWhitespace() }
+        if (space >= 0) {
+            val head = trimmed.substring(0, space)
+            if (isCanId(head, headerChars)) return trimmed.substring(space).trim()
+            return trimmed
+        }
+        if (trimmed.length > headerChars && isCanId(trimmed.substring(0, headerChars), headerChars)) {
+            val rest = trimmed.substring(headerChars)
+            if (rest.length >= 2 && rest.length % 2 == 0 && rest.all { it.isHexDigit() }) return rest
+        }
+        return trimmed
     }
 
     fun hexBytes(hex: String): ByteArray {
-        val clean = hex.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
-        return ByteArray(clean.size) { i -> clean[i].toInt(16).toByte() }
+        val compact = hex.replace(Regex("\\s+"), "")
+        if (compact.isEmpty()) return ByteArray(0)
+        require(compact.length % 2 == 0) { "odd hex length: $hex" }
+        return ByteArray(compact.length / 2) { i -> compact.substring(i * 2, i * 2 + 2).toInt(16).toByte() }
     }
 
     fun hexOf(bytes: ByteArray): String = bytes.joinToString(" ") { "%02X".format(it) }

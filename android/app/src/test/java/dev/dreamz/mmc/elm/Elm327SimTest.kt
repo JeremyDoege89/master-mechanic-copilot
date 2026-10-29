@@ -112,11 +112,15 @@ class Elm327SimTest {
         val r = driver.query("03")
         require(r is ElmResult.Data)
         assertEquals(listOf("P0303"), Parsers.decodeDtcs(r.ecus.single().bytes.copyOfRange(1, 3)))
-        // Re-parse through the numbered-frame path for realism.
+        // Re-parse through the PCI-frame path for realism (headers on by default).
         val sim = Elm327Sim(Personality.GENUINE, Scenario.COIL_UNPLUGGED, 3)
         val raw = sim.transact("06", 300)
         val frameLines = raw.substringBefore(">").lines().map { l -> l.trim() }.filter { it.isNotEmpty() }
-        val payload = Parsers.reassembleIsoTp(frameLines)
+        val pci = frameLines.map { ln ->
+            val ecu = (Parsers.frame(ln + "\r>") as ElmResult.Data).ecus.single()
+            Parsers.hexOf(ecu.bytes)
+        }
+        val payload = Parsers.reassembleIsoTp(pci)
         val entries = Parsers.parseMode06(payload.copyOfRange(1, payload.size))
         assertEquals(4, entries.size)
         assertEquals(45, entries.first { it.tid == 3 }.value)
@@ -148,6 +152,46 @@ class Elm327SimTest {
         val healthy = driverFor(Personality.GENUINE, Scenario.HEALTHY)
         healthy.init()
         assertTrue(healthy.queryMode06().all { it.value == 0 })
+    }
+
+    @Test
+    fun genuineLiveReadsWorkAfterInitPackedConfig() {
+        // Field configuration: driver.init() sends ATS0 + ATH1, so the sim
+        // answers packed with headers (Mazda 3 field log). Every live read
+        // the app performs must decode in that configuration.
+        val sim = Elm327Sim(Personality.GENUINE, Scenario.HEALTHY)
+        val driver = Elm327Driver(sim)
+        driver.init()
+        assertEquals(750.0, pid(driver, 0x0C), 1.0)
+        assertTrue(pid(driver, 0x05) in 88.0..100.0)
+        assertTrue(pid(driver, 0x10) > 0.0)
+        assertEquals(Elm327Sim.VIN, driver.queryVin())
+        val entries = driver.queryMode06()
+        assertEquals(4, entries.size)
+        assertTrue(entries.all { it.value == 0 })
+        val dtcs = driver.query("03")
+        assertTrue(dtcs is ElmResult.TypedError && dtcs.kind == ErrorKind.NO_DATA)
+    }
+
+    @Test
+    fun ats0PacksRepliesAndAts1RestoresSpaces() {
+        val sim = Elm327Sim(Personality.GENUINE, Scenario.HEALTHY)
+        assertTrue(sim.transact("ATS0", 300).startsWith("OK"))
+        sim.transact("ATH1", 300)
+        val packed = sim.transact("010C", 300)
+        assertTrue("headers on: $packed", packed.startsWith("7E8"))
+        assertTrue("no spaces after ATS0: $packed", !packed.substringBefore(">").contains(" "))
+        sim.transact("ATS1", 300)
+        assertTrue(sim.transact("010C", 300).contains(" "))
+    }
+
+    @Test
+    fun syntheticJm1VinReadsThroughPackedConfig() {
+        // Synthetic JM1 VIN (never an owner's real VIN: the repo is public).
+        val sim = Elm327Sim(Personality.GENUINE, Scenario.HEALTHY, vin = "JM1BM9M72S1000001")
+        val driver = Elm327Driver(sim)
+        driver.init() // ATS0 + ATH1: packed PCI frames with headers
+        assertEquals("JM1BM9M72S1000001", driver.queryVin())
     }
 
     @Test

@@ -24,6 +24,7 @@ class Elm327Sim(
     val scenario: Scenario = Scenario.HEALTHY,
     val misfireCyl: Int = 3,
     val displacementL: Double = 2.0,
+    val vin: String = VIN,
 ) : Transport {
     companion object {
         const val AMBIENT_C = 20.0
@@ -37,6 +38,8 @@ class Elm327Sim(
     var simTimeSec: Double = 1200.0
     var rpm: Double = IDLE_RPM
     var headersOn: Boolean = true
+    /** ATS0/ATS1 spacing state, like a real adapter (spaces on until ATS0). */
+    var spacesOn: Boolean = true
 
     fun advance(seconds: Double) {
         simTimeSec += seconds
@@ -83,10 +86,54 @@ class Elm327Sim(
         return b0.toByte() to b1.toByte()
     }
 
+    private fun hexJoin(bs: ByteArray): String =
+        if (spacesOn) bs.joinToString(" ") { "%02X".format(it) }
+        else bs.joinToString("") { "%02X".format(it) }
+
     private fun ecu(payload: ByteArray): String {
-        val body = payload.joinToString(" ") { "%02X".format(it) }
         val len = "%02X".format(payload.size)
-        return if (headersOn) "7E8 $len $body\r\r>" else "$body\r\r>"
+        val body = hexJoin(payload)
+        if (!headersOn) return "$body\r\r>"
+        return if (spacesOn) "7E8 $len $body\r\r>" else "7E8$len$body\r\r>"
+    }
+
+    /**
+     * Multi-frame reply for [data] (mode byte + payload). With headers on
+     * the adapter emits raw PCI frames with the CAN-id prefix (spaced until
+     * ATS0); with headers off it emits the ELM "N:" numbered format.
+     */
+    private fun isoTpReply(data: ByteArray): String {
+        if (!headersOn) {
+            val first = data.copyOfRange(0, minOf(9, data.size))
+            val lines = mutableListOf("0: ${"%02X".format(data.size)} ${hexJoin(first)}")
+            var i = first.size
+            var n = 1
+            while (i < data.size) {
+                val part = data.copyOfRange(i, minOf(i + 11, data.size))
+                lines.add("$n: ${hexJoin(part)}")
+                i += part.size
+                n++
+            }
+            return lines.joinToString("\r") + "\r\r>"
+        }
+        val total = data.size
+        val lines = mutableListOf<String>()
+        val firstData = data.copyOfRange(0, minOf(6, total))
+        val firstFrame = byteArrayOf(
+            (0x10 or ((total shr 8) and 0x0F)).toByte(),
+            (total and 0xFF).toByte(),
+        ) + firstData
+        lines.add("7E8${if (spacesOn) " " else ""}${hexJoin(firstFrame)}")
+        var i = firstData.size
+        var seq = 1
+        while (i < total) {
+            val part = data.copyOfRange(i, minOf(i + 7, total))
+            val frame = byteArrayOf((0x20 or (seq and 0x0F)).toByte()) + part
+            lines.add("7E8${if (spacesOn) " " else ""}${hexJoin(frame)}")
+            i += part.size
+            seq++
+        }
+        return lines.joinToString("\r") + "\r\r>"
     }
 
     private fun pidLine(pid: Int, data: ByteArray): String {
@@ -99,9 +146,16 @@ class Elm327Sim(
         // --- AT commands ---
         if (cmd == "ATZ") return banner() + "\r\r>"
         if (cmd == "ATE0" || cmd == "ATL0") return "OK\r\r>"
-        if (cmd == "ATS0" || cmd == "ATAT1" || cmd == "ATST32") {
-            return if (personality == Personality.BAD_CLONE && (cmd == "ATS0")) "?\r\r>" else "OK\r\r>"
+        if (cmd == "ATS0") {
+            if (personality == Personality.BAD_CLONE) return "?\r\r>"
+            spacesOn = false
+            return "OK\r\r>"
         }
+        if (cmd == "ATS1") {
+            spacesOn = true
+            return "OK\r\r>"
+        }
+        if (cmd == "ATAT1" || cmd == "ATST32") return "OK\r\r>"
         if (cmd == "ATH1") {
             headersOn = true
             return "OK\r\r>"
@@ -145,7 +199,7 @@ class Elm327Sim(
         if (cmd.startsWith("22")) {
             if (personality != Personality.GENUINE) return "?\r\r>"
             if (cmd == "22F190") {
-                val vinBytes = VIN.toByteArray(Charsets.US_ASCII)
+                val vinBytes = vin.toByteArray(Charsets.US_ASCII)
                 val data = byteArrayOf(0x62, 0xF1.toByte(), 0x90.toByte()) + vinBytes
                 return ecu(data)
             }
@@ -218,22 +272,12 @@ class Elm327Sim(
             out.add(0x00)
             out.add(0x0F)
         }
-        val payload = out.toByteArray()
-        // Numbered ISO-TP lines like the golden transcript style.
-        val first = payload.copyOfRange(0, 9)
-        val second = payload.copyOfRange(9, 20)
-        val third = payload.copyOfRange(20, payload.size)
-        fun hex(bs: ByteArray) = bs.joinToString(" ") { "%02X".format(it) }
-        return "0: ${"%02X".format(payload.size)} ${hex(first)}\r" +
-            "1: ${hex(second)}\r2: ${hex(third)}\r\r>"
+        return isoTpReply(out.toByteArray())
     }
 
     private fun vinFrames(): String {
-        val vinBytes = VIN.toByteArray(Charsets.US_ASCII)
+        val vinBytes = vin.toByteArray(Charsets.US_ASCII)
         val data = byteArrayOf(0x49, 0x02, 0x01) + vinBytes
-        val first = data.copyOfRange(0, 9)
-        val second = data.copyOfRange(9, data.size)
-        fun hex(bs: ByteArray) = bs.joinToString(" ") { "%02X".format(it) }
-        return "0: ${"%02X".format(data.size)} ${hex(first)}\r1: ${hex(second)}\r\r>"
+        return isoTpReply(data)
     }
 }

@@ -23,6 +23,37 @@ class Recorder {
 
     fun recordRx(reply: String) {
         rows.add(Row(elapsed(), "rx", reply))
+        // Field visibility: every raw adapter response line goes to logcat
+        // tag MMC (VIN-masked). Runs for all transports because the app's
+        // RecordingTransport funnels every exchange through here.
+        for (line in reply.split('\r', '\n')) {
+            val trimmed = line.trim()
+            if (trimmed.isNotEmpty() && trimmed != ">") trafficLog(maskVins(trimmed))
+        }
+    }
+
+    /**
+     * Marker row for a failed live flow, so a flushed recording shows why it
+     * stopped. ReplayTransport skips non-tx/rx rows, so replay is unaffected.
+     */
+    fun recordError(message: String) {
+        rows.add(Row(elapsed(), "error", message))
+    }
+
+    /**
+     * Flush the transcript so far plus a failure marker to [file]: field
+     * failures leave a recording instead of vanishing. Call from the live
+     * flow's catch block with the failure message.
+     */
+    fun writeFailureMmrec(
+        file: File,
+        metaJson: String,
+        error: String,
+        eventsJsonl: String = "",
+    ): File {
+        recordError(error)
+        writeMmrec(file, metaJson, eventsJsonl)
+        return file
     }
 
     private fun elapsed(): Long = (System.nanoTime() - startNs) / 1_000_000
@@ -55,6 +86,43 @@ class Recorder {
     }
 
     companion object {
+        /**
+         * Per-line adapter-traffic sink (logcat tag MMC on device). Mutable
+         * for JVM tests; [resetTrafficLog] restores the logcat default.
+         */
+        var trafficLog: (String) -> Unit = { line ->
+            try {
+                android.util.Log.i("MMC", line)
+            } catch (_: RuntimeException) {
+                // JVM unit-test harness: android.jar methods are stubs.
+            }
+        }
+
+        fun resetTrafficLog() {
+            trafficLog = { line ->
+                try {
+                    android.util.Log.i("MMC", line)
+                } catch (_: RuntimeException) {
+                    // JVM unit-test harness: android.jar methods are stubs.
+                }
+            }
+        }
+
+        private val VIN_LIKE = Regex("(?<![A-Za-z0-9])[A-HJ-NPR-Z0-9]{17}(?![A-Za-z0-9])", RegexOption.IGNORE_CASE)
+
+        /**
+         * Mask any 17-char VIN to its last 6 ("····123456"). A standalone run
+         * of packed hex can also be 17 VIN-alphabet chars, so a candidate is
+         * only masked when it carries a non-hex letter (G–Z): real VINs
+         * always do outside pathological cases, while packed OBD bytes never
+         * do. Boundary guards keep longer hex runs intact.
+         */
+        fun maskVins(s: String): String =
+            VIN_LIKE.replace(s) { m ->
+                val upper = m.value.uppercase()
+                if (upper.any { it in 'G'..'Z' }) "····" + upper.takeLast(6) else m.value
+            }
+
         fun escape(s: String): String = buildString {
             for (c in s) {
                 when (c) {

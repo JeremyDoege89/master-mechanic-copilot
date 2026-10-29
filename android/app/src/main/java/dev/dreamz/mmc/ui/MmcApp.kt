@@ -1,13 +1,25 @@
 package dev.dreamz.mmc.ui
 
 import android.content.Context
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
+import dev.dreamz.mmc.adapter.AndroidSockets
+import dev.dreamz.mmc.adapter.BondedBtDevice
+import dev.dreamz.mmc.adapter.BtSetup
+import dev.dreamz.mmc.adapter.ByteSocket
+import dev.dreamz.mmc.adapter.ClassicRfcommTransport
+import dev.dreamz.mmc.adapter.WifiTcpTransport
+import dev.dreamz.mmc.session.DevicePrefs
+import dev.dreamz.mmc.session.VinDecode
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
@@ -120,6 +132,19 @@ class MmcController(context: Context, private val buildDefaultUrl: String) {
     var resultText by mutableStateOf("")
     var reportJson by mutableStateOf<JSONObject?>(null)
     var blobRef by mutableStateOf("")
+
+    // -- On-vehicle transports (Bluetooth Classic + Wi-Fi TCP) ---------------
+    // Bonded-device picker, remembered MAC, editable Wi-Fi endpoint. BLE is
+    // intentionally unwired ("coming soon"). See BtSetup / DevicePrefs.
+    private val deviceStore = DevicePrefs.sharedPrefs(appCtx)
+    var btDevices by mutableStateOf<List<BondedBtDevice>>(emptyList())
+    var selectedBtMac by mutableStateOf(DevicePrefs.btMac(deviceStore))
+    var wifiHostField by mutableStateOf(DevicePrefs.wifiHost(deviceStore))
+    var wifiPortField by mutableStateOf(DevicePrefs.wifiPort(deviceStore).toString())
+    /** Last 6 of the live VIN for display; the full VIN never touches UI/logs. */
+    var vinLast6 by mutableStateOf("")
+    /** Step-by-step progress for the live connect (mirrored to logcat MMC). */
+    var progressLog by mutableStateOf(listOf<String>())
 
     // Test-run flow state (bug 2): OBD auto-measure vs manual outcome form.
     var activeTestRef by mutableStateOf<String?>(null)
@@ -402,16 +427,269 @@ class MmcController(context: Context, private val buildDefaultUrl: String) {
         main.post { stateJson = obj }
     }
 
+    // -- On-vehicle permission + device plumbing ----------------------------
+
+    /** Runtime Bluetooth permission needed on this phone (always true ≤ API 30). */
+    fun needsBtRuntimePermission(): Boolean =
+        BtSetup.needsRuntimeBtConnect(Build.VERSION.SDK_INT)
+
+    fun hasBtPermission(): Boolean {
+        if (!needsBtRuntimePermission()) return true
+        return appCtx.checkSelfPermission(android.Manifest.permission.BLUETOOTH_CONNECT) ==
+            PackageManager.PERMISSION_GRANTED
+    }
+
+    fun btPermissionConst(): String = android.Manifest.permission.BLUETOOTH_CONNECT
+
+    /** User denied the Bluetooth prompt: plain next steps, no dead end. */
+    fun onBtPermissionDenied() {
+        progress("Bluetooth permission denied.")
+        status = BtSetup.BT_DENIED
+    }
+
+    /** List bonded (already paired) Classic devices for the picker. */
+    fun refreshBondedDevices() {
+        btDevices = emptyList()
+        if (!hasBtPermission()) {
+            status = "Bluetooth permission is needed to list your paired adapter. " +
+                "Tap Connect and allow it."
+            return
+        }
+        bg {
+            try {
+                val found = AndroidSockets.bondedClassicDevices(appCtx)
+                main.post {
+                    btDevices = found
+                    val stillThere = selectedBtMac?.let { mac -> found.any { it.mac == mac } } ?: false
+                    if (!stillThere) {
+                        selectedBtMac = DevicePrefs.btMac(deviceStore)?.takeIf { mac ->
+                            found.any { it.mac == mac }
+                        }
+                    }
+                    status = if (found.isEmpty()) {
+                        "No paired Bluetooth devices. Pair the ELM327 in Android " +
+                            "Settings → Bluetooth first (usually PIN 1234 or 0000)."
+                    } else {
+                        "Pick your ELM327, then Connect."
+                    }
+                }
+            } catch (e: SecurityException) {
+                main.post { status = BtSetup.BT_DENIED }
+            } catch (e: Exception) {
+                main.post { status = "Bluetooth list failed: ${e.message}" }
+            }
+        }
+    }
+
+    fun pickBtDevice(mac: String) {
+        selectedBtMac = mac
+        val name = btDevices.firstOrNull { it.mac == mac }?.name.orEmpty()
+        DevicePrefs.rememberBtDevice(deviceStore, mac, name)
+        status = "Adapter: ${DevicePrefs.btLabel(name, mac)}"
+    }
+
+    fun saveWifiEndpoint() {
+        val (h, p) = DevicePrefs.wifiEndpoint(wifiHostField, wifiPortField)
+        DevicePrefs.saveWifi(deviceStore, h, p.toString())
+        wifiHostField = h
+        wifiPortField = p.toString()
+    }
+
+    /** One status line on screen AND in logcat (`adb logcat -s MMC:I`). */
+    private fun progress(line: String) {
+        Log.i("MMC", line)
+        main.post {
+            status = line
+            progressLog = (progressLog + line).takeLast(8)
+        }
+    }
+
     /** Connect through the picked transport (Sim runs the full flow, no car). */
     fun connect() {
+        progressLog = emptyList()
+        when (transportKind) {
+            TransportKind.SIM -> connectSim()
+            TransportKind.BLE -> {
+                progress("Bluetooth LE picked.")
+                status = BtSetup.BLE_COMING_SOON
+            }
+            TransportKind.CLASSIC -> connectClassic()
+            TransportKind.WIFI -> connectWifi()
+        }
+    }
+
+    private fun connectClassic() {
+        val mac = selectedBtMac
+        if (mac.isNullOrEmpty()) {
+            status = "Pick your paired ELM327 first (pair it in Android Settings → Bluetooth)."
+            refreshBondedDevices()
+            return
+        }
+        if (!hasBtPermission()) {
+            status = "Bluetooth permission is needed to reach the adapter. Tap Connect again to allow it."
+            return
+        }
+        progress("Connecting Bluetooth Classic (${DevicePrefs.shortMac(mac)})…")
+        bg {
+            try {
+                val socket = AndroidSockets.openClassic(appCtx, mac)
+                progress("Bluetooth connected — talking to the adapter…")
+                connectLive(ClassicRfcommTransport { socket }.also { it.connect() }, "Bluetooth Classic")
+            } catch (e: SecurityException) {
+                val line = "Bluetooth ${BtSetup.describeFailure(BtSetup.FailStep.PERMISSION, e)}"
+                Log.i("MMC", line)
+                progress(line)
+                main.post { status = "$line — allow Bluetooth and tap Connect again." }
+            } catch (e: Exception) {
+                val line = "Bluetooth ${BtSetup.describeFailure(BtSetup.FailStep.CONNECT_ATTEMPT, e)}"
+                Log.i("MMC", line)
+                progress(line)
+                main.post { status = BtSetup.friendlyConnectError(e as? Exception ?: Exception("$e")) }
+            }
+        }
+    }
+
+    private fun connectWifi() {
+        saveWifiEndpoint()
+        val (host, port) = DevicePrefs.wifiEndpoint(wifiHostField, wifiPortField)
+        progress("Connecting Wi-Fi TCP $host:$port…")
+        bg {
+            try {
+                val socket = AndroidSockets.openTcp(host, port)
+                progress("Wi-Fi connected — talking to the adapter…")
+                connectLive(WifiTcpTransport({ _, _ -> socket }, host, port).also { it.connect() }, "Wi-Fi TCP $host:$port")
+            } catch (e: Exception) {
+                val msg = BtSetup.friendlyConnectError(e as? Exception ?: Exception("$e"))
+                Log.i("MMC", "TCP connect failed: ${e.message}")
+                main.post { status = msg }
+            }
+        }
+    }
+
+    /**
+     * Shared live flow for a connected [ByteSocket]: ELM init + fingerprint,
+     * VIN (Mode 09) → vehicle → backend (pack pick), then the live strip.
+     * Runs on a background thread; progress goes to screen + logcat MMC.
+     * The allowlist in Elm327Driver is untouched — still no writes.
+     */
+    private fun connectLive(liveTransport: Transport, label: String) {
+        val transport: Transport = RecordingTransport(liveTransport, recorder)
+        var step = BtSetup.FailStep.ATZ
+        try {
+            progress("Sending ATZ (adapter init)…")
+            val d = Elm327Driver(transport)
+            driver = d
+            val profile = d.init()
+            step = BtSetup.FailStep.PROTOCOL
+            val proto = profile.protocol.ifEmpty { "unknown protocol" }
+            progress("Protocol: ${profile.kind} $proto")
+            main.post { profileText = "${profile.kind} proto=${profile.protocol} multi=${profile.supportsMultiPid}" }
+
+            step = BtSetup.FailStep.VIN
+            progress("Reading VIN (Mode 09)…")
+            val vehicle = readVehicle()
+            if (vehicle != null) {
+                progress("Vehicle ····${vinLast6} (${vehicle.optString("make")} ${vehicle.optString("model")} ${vehicle.optInt("year")})")
+            } else if (vinLast6.isNotEmpty()) {
+                progress("Vehicle ····$vinLast6 (VIN kept on this phone only)")
+            } else {
+                progress("No VIN from this vehicle — continuing without it.")
+            }
+
+            step = BtSetup.FailStep.SESSION
+            progress("Creating live session…")
+            val c = client()
+            val sid = c.createSession(userLevel, tools.toList(), "live", vehicle)
+            Log.i("MMC", "session $sid created (mode=live, vehicle=${vehicle != null}, pack via backend)")
+            main.post { sessionId = sid }
+
+            step = BtSetup.FailStep.LIVE_DATA
+            progress("Reading live data (rpm, coolant, airflow)…")
+            // Live strip: one fast + one slow read, posted as rule observations.
+            val rpm = readPid(d, 0x0C)
+            val ect = readPid(d, 0x05)
+            val maf = readPid(d, 0x10)
+            main.post { pidText = "rpm=%.0f ect=%.0fC maf=%.2fg/s".format(rpm, ect, maf) }
+            Log.i("MMC", "live rpm=%.0f ect=%.0fC maf=%.2f".format(rpm, ect, maf))
+            var n = 0
+            for ((feature, value, units) in listOf(
+                Triple("rpm", rpm, "rpm"), Triple("ect_c", ect, "degC"), Triple("maf_gs", maf, "g/s")
+            )) {
+                n += 1
+                c.postEvent(sid, "observation_added", JSONObject()
+                    .put("observation_id", "obs_live_$feature")
+                    .put("feature", feature)
+                    .put("value", value)
+                    .put("units", units)
+                    .put("conditions", JSONObject().put("rpm", rpm).put("ect_c", ect))
+                    .put("confidence", 0.9)
+                    .put("extractor", "rule"))
+            }
+            postState(c.getState(sid))
+            socketKeepAlive(c, sid)
+            main.post {
+                status = "Live ($label): $n observations streamed."
+                screen = Screen.LIVE
+            }
+            Log.i("MMC", "live session ready ($label)")
+        } catch (e: Exception) {
+            val line = "Live flow ${BtSetup.describeFailure(step, e)}"
+            Log.i("MMC", line)
+            progress(line)
+            when (liveTransport) {
+                is ClassicRfcommTransport -> try {
+                    liveTransport.close()
+                } catch (_: Exception) {
+                }
+                is WifiTcpTransport -> try {
+                    liveTransport.close()
+                } catch (_: Exception) {
+                }
+            }
+            main.post { status = "Error: $line" }
+        }
+    }
+
+    private fun socketKeepAlive(c: SessionClient, sid: String) {
+        socket?.cancel()
+        socket = c.openStateSocket(sid, ::postState) { err ->
+            main.post { status = "State socket: $err (reconnects on Connect)" }
+        }
+    }
+
+    /**
+     * Best-effort VIN → vehicle. Returns null when the car gives no VIN or
+     * the result is too thin for the backend schema (then only [vinLast6] is
+     * kept, on this phone). The full VIN is never logged or shown.
+     */
+    private fun readVehicle(): JSONObject? {
+        val d = driver ?: return null
+        val vin = try {
+            d.queryVin()
+        } catch (e: Exception) {
+            Log.i("MMC", "VIN read failed: ${e.message}")
+            return null
+        }
+        if (!VinDecode.isPlausibleVin(vin)) {
+            Log.i("MMC", "VIN implausible, skipping vehicle")
+            return null
+        }
+        main.post { vinLast6 = VinDecode.last6(vin) }
+        Log.i("MMC", "VIN read ····${VinDecode.last6(vin)}")
+        val decoded = VinDecode.fetchVpic(vin)
+            ?: VinDecode.fallbackVehicle(vin)
+        if ((decoded["year"] as? Int ?: 0) < 1980) return null
+        // Drop junk vPIC rows that would fail backend validation.
+        if ((decoded["make"] as? String).isNullOrBlank()) return null
+        return JSONObject(decoded as Map<*, *>)
+    }
+
+    private fun connectSim() {
         status = "Connecting (${transportKind.title})…"
         bg {
-            val transport: Transport = when (transportKind) {
-                TransportKind.SIM -> RecordingTransport(
-                    SimTransport(Elm327Sim(scenario = simScenario)), recorder
-                )
-                else -> error("${transportKind.title} pairing lands with the on-vehicle pass; pick Simulator for now.")
-            }
+            val transport: Transport = RecordingTransport(
+                SimTransport(Elm327Sim(scenario = simScenario)), recorder
+            )
             val c = client()
             val mode = if (transportKind == TransportKind.SIM) "sim" else "live"
             val sid = c.createSession(userLevel, tools.toList(), mode)
@@ -1132,27 +1410,137 @@ private fun TransportScreen(c: MmcController) {
     Text("2 · Transport (Sim runs the full flow, no car)", style = MaterialTheme.typography.titleMedium)
     for (kind in TransportOptions.all) {
         Row(modifier = Modifier.selectable(
-            selected = c.transportKind == kind, onClick = { c.transportKind = kind },
+            selected = c.transportKind == kind,
+            onClick = {
+                c.transportKind = kind
+                if (kind == TransportKind.CLASSIC) c.refreshBondedDevices()
+            },
         )) {
-            RadioButton(selected = c.transportKind == kind, onClick = { c.transportKind = kind })
+            RadioButton(
+                selected = c.transportKind == kind,
+                onClick = {
+                    c.transportKind = kind
+                    if (kind == TransportKind.CLASSIC) c.refreshBondedDevices()
+                },
+            )
             Text(kind.title, modifier = Modifier.padding(top = 12.dp))
         }
     }
-    if (c.transportKind == TransportKind.SIM) {
-        Text("Simulator scenario (planted fault):")
-        for (s in Scenario.entries) {
-            Row(modifier = Modifier.selectable(
-                selected = c.simScenario == s, onClick = { c.simScenario = s },
-            )) {
-                RadioButton(selected = c.simScenario == s, onClick = { c.simScenario = s })
-                Text(scenarioLabel(s), modifier = Modifier.padding(top = 12.dp))
+    // Bluetooth runtime permission: plain explanation is on screen first;
+    // the system prompt fires only when Bluetooth needs it. Only
+    // BLUETOOTH_CONNECT is ever requested — a bonded connect never needs
+    // BLUETOOTH_SCAN.
+    val btPermissionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) {
+            c.refreshBondedDevices()
+            c.connect()
+        } else {
+            c.onBtPermissionDenied()
+        }
+    }
+    // One clear control for the paired list: it loads automatically when
+    // Classic is picked (see the radio above); Refresh list reloads it, asking
+    // for the permission first when it is still missing.
+    val refreshPairedList = {
+        if (c.needsBtRuntimePermission() && !c.hasBtPermission()) {
+            btPermissionLauncher.launch(c.btPermissionConst())
+        } else {
+            c.refreshBondedDevices()
+        }
+    }
+    when (c.transportKind) {
+        TransportKind.SIM -> {
+            Text("Simulator scenario (planted fault):")
+            for (s in Scenario.entries) {
+                Row(modifier = Modifier.selectable(
+                    selected = c.simScenario == s, onClick = { c.simScenario = s },
+                )) {
+                    RadioButton(selected = c.simScenario == s, onClick = { c.simScenario = s })
+                    Text(scenarioLabel(s), modifier = Modifier.padding(top = 12.dp))
+                }
+            }
+        }
+        TransportKind.CLASSIC -> ClassicPicker(c, onRefreshList = { refreshPairedList() })
+        TransportKind.WIFI -> WifiFields(c)
+        TransportKind.BLE -> Text(dev.dreamz.mmc.adapter.BtSetup.BLE_COMING_SOON)
+    }
+    if (c.progressLog.isNotEmpty()) {
+        Text("Progress:")
+        for (line in c.progressLog) Text("• $line")
+    }
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Button(onClick = { c.screen = Screen.SETTINGS }) { Text("← Back") }
+        Button(
+            onClick = {
+                if (c.transportKind == TransportKind.CLASSIC && c.needsBtRuntimePermission() && !c.hasBtPermission()) {
+                    btPermissionLauncher.launch(c.btPermissionConst())
+                } else {
+                    c.connect()
+                }
+            },
+            // No device, no connect: Connect stays disabled until a paired
+            // device is selected, so the owner cannot tap into a dead end.
+            enabled = c.transportKind != TransportKind.CLASSIC || !c.selectedBtMac.isNullOrEmpty(),
+        ) { Text("Connect") }
+    }
+}
+
+@Composable
+private fun ClassicPicker(c: MmcController, onRefreshList: () -> Unit) {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    Text(dev.dreamz.mmc.adapter.BtSetup.BT_EXPLANATION)
+    if (c.needsBtRuntimePermission() && !c.hasBtPermission()) {
+        Text("Bluetooth permission is needed to show your paired adapter — tap Refresh list to allow it.")
+    }
+    if (c.btDevices.isEmpty()) {
+        Text("No paired devices listed yet.")
+    } else {
+        Text("Paired devices (tap yours):")
+        for (d in c.btDevices) {
+            val selected = c.selectedBtMac == d.mac
+            Row(modifier = Modifier
+                .fillMaxWidth()
+                .background(
+                    if (selected) MaterialTheme.colorScheme.primaryContainer
+                    else MaterialTheme.colorScheme.surface,
+                )
+                .selectable(selected = selected, onClick = { c.pickBtDevice(d.mac) })
+                .padding(4.dp),
+            ) {
+                RadioButton(selected = selected, onClick = { c.pickBtDevice(d.mac) })
+                Text("${d.name} (${dev.dreamz.mmc.session.DevicePrefs.shortMac(d.mac)})",
+                    modifier = Modifier.padding(top = 12.dp))
             }
         }
     }
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        Button(onClick = { c.screen = Screen.SETTINGS }) { Text("← Back") }
-        Button(onClick = { c.connect() }) { Text("Connect") }
+        Button(onClick = onRefreshList) { Text("Refresh list") }
+        Button(onClick = {
+            ctx.startActivity(
+                android.content.Intent(android.provider.Settings.ACTION_BLUETOOTH_SETTINGS)
+                    .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK),
+            )
+        }) { Text("Open Bluetooth settings") }
     }
+    Text("Not listed? Pair it in Android Settings → Bluetooth first (PIN 1234 or 0000).")
+}
+
+@Composable
+private fun WifiFields(c: MmcController) {
+    Text("Wi-Fi ELM327 endpoint (check the adapter's hotspot page for its address):")
+    OutlinedTextField(
+        value = c.wifiHostField, onValueChange = { c.wifiHostField = it },
+        label = { Text("Host (default 192.168.0.10)") }, modifier = Modifier.fillMaxWidth(),
+        singleLine = true,
+    )
+    OutlinedTextField(
+        value = c.wifiPortField,
+        onValueChange = { c.wifiPortField = it.filter(Char::isDigit).take(5) },
+        label = { Text("Port (default 35000)") }, modifier = Modifier.fillMaxWidth(),
+        singleLine = true,
+    )
 }
 
 @Composable
@@ -1160,7 +1548,8 @@ private fun LiveScreen(c: MmcController) {
     Text("3 · Live", style = MaterialTheme.typography.titleMedium)
     if (c.profileText.isNotEmpty()) Text("Adapter: ${c.profileText}")
     if (c.pidText.isNotEmpty()) Text("PIDs: ${c.pidText}")
-    c.stateJson?.optJSONObject("vehicle")?.optString("vin_last6")?.takeIf { it.isNotEmpty() }?.let {
+    (c.stateJson?.optJSONObject("vehicle")?.optString("vin_last6")?.takeIf { it.isNotEmpty() }
+        ?: c.vinLast6.takeIf { it.isNotEmpty() })?.let {
         Text("Vehicle ····$it")
     }
     Text(c.hypothesisHeader())

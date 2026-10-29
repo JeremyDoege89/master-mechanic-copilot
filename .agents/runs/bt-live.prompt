@@ -1,0 +1,22 @@
+The owner is at the car NOW with a Mazda 3 and an ELM327 Bluetooth adapter. The app shows
+"Error: Bluetooth Classic pairing lands with the on-vehicle pass; pick Simulator for now." (MmcApp.kt ~line 413): the
+live transports were never wired to Android. Ship the minimum real on-vehicle path, fast and carefully:
+1. Manifest: BLUETOOTH_CONNECT (and BLUETOOTH_SCAN with neverForLocation) for API 31+; legacy BLUETOOTH /
+   BLUETOOTH_ADMIN with maxSdkVersion 30. Request BLUETOOTH_CONNECT at runtime when the user taps Connect on a
+   Bluetooth transport, with a plain explanation; handle denial with a clear message.
+2. Bluetooth Classic: a device picker listing bonded (already paired) devices by name + MAC, remembered in prefs; connect
+   with createRfcommSocketToServiceRecord(SPP UUID 00001101-0000-1000-8000-00805F9B34FB), cancelDiscovery first, and
+   fall back to createInsecureRfcommSocketToServiceRecord then the reflection createRfcommSocket(1) if connect() throws
+   (common on ELM327 clones). Adapt the BluetoothSocket's streams to the existing ByteSocket seam used by
+   ClassicRfcommTransport. Connection timeout and a readable error ("adapter not paired / out of range / in use").
+3. Wi-Fi TCP: connect to a host:port the user can edit, default 192.168.0.10:35000, through WifiTcpTransport.
+   (Bluetooth LE can stay "coming soon" with an honest message instead of an error.)
+4. Live session: mode "live"; after the ELM init + fingerprint, read the VIN (Mode 09) and send the vehicle to the
+   backend so it decodes make/model/displacement and picks the knowledge pack (a Mazda gets generic-gas-v1); VIN shown
+   truncated only. Wrap the live transport in RecordingTransport so the session is recorded to the .mmrec like the sim.
+   Keep every safety rule: the allowlist in Elm327Driver is unchanged; no writes.
+5. Show progress on screen at each step (permission, connecting, ATZ, protocol, VIN, live data) and log to logcat with
+   tag MMC so I can watch it over adb.
+JVM tests for anything testable without hardware (socket adapter over fake streams, fallback order, device-pref
+persistence, permission-state logic). Run the Android build offline (seeded GRADLE_USER_HOME) and the backend suite if
+you touch it. Do not commit. Foreground only. Finish with exactly what the owner should tap.

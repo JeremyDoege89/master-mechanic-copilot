@@ -1,0 +1,33 @@
+Design pass on the Android app (owner feedback, verbatim gist: "it looks like basic 90s IBM software; people won't be
+comfortable using it"). Today ui/MmcApp.kt (~1,800 lines) is stock Material3 defaults: purple pill buttons, plain
+radio lists, no hierarchy. Scope: android/app/src/main/java/dev/dreamz/mmc/ui/ only (+ res/ for theme, fonts, icons).
+Do NOT change elm/, adapter/, session/ logic or the safety behaviour (a parallel job is editing elm/ and Recorder.kt).
+
+Read only what you need: ui/MmcApp.kt, ui/MmcViewModel.kt, ui/SafetyGates.kt, web/src/styles.css (for the brand tokens).
+
+Design spec (follow it; this is a tool used in a driveway, often in sun or a dark garage, sometimes with gloves):
+- Theme: custom Material3 color scheme from the web brand: accent ember #B3400A (dark theme #FF8C42), surfaces warm
+  graphite in dark (#151311 / #1E1B18 / #2A2622), warm off-white in light; dark theme is the default. Status colours:
+  ok #2E7D32, warn #E0A100, bad #C62828. One typeface family (system sans is fine), clear scale: 32/24/18/16/14,
+  tabular figures for numbers. 8 dp spacing grid, 16 dp radius cards, 56 dp minimum touch targets for primary actions.
+- App bar on every screen: MMC mark (ember rounded square with "MMC"), screen title, a status chip row: adapter
+  (Disconnected / Connecting / Genuine ELM327 · CAN 500k), vehicle (Mazda 3 ··XXXXXX), backend reachable, and the budget.
+- Screens, each its own composable file (split MmcApp.kt): Welcome/level (three large selectable cards: Driver, DIY,
+  Tech with one-line descriptions and an icon), Tools (chip grid with icons), Connect (segmented control for transport;
+  for Bluetooth a device list as cards with name, MAC tail, "last used" badge, a single Refresh action and the
+  "Not listed? Pair in Settings" link; a big Connect button; a step-progress list with check/spinner/error icons for
+  Permission -> Bluetooth -> Adapter (ATZ) -> Protocol -> VIN -> Live, each error showing the real message),
+  Live (big-number gauge tiles for RPM, coolant, STFT/LTFT, MAF, voltage with units and a small sparkline; a "Suspects"
+  card with horizontal probability bars and plain-language labels at the chosen level; a prominent Next Test card with
+  title, why, expected outcomes, tools, safety-gate checklist as large checkboxes and a Run/Record button; the
+  conclusion banner when the top suspect crosses 0.8), Camera (full-bleed preview, SAM candidate outlines with labels,
+  shutter button, "What am I looking at?" chip), Voice (a floating mic button available on Live with a listening state,
+  live caption bar, and the confirm card: parsed value, test name, Confirm / Cancel), Report (summary at level, top
+  suspects, link to the web report).
+- Motion: subtle (200 ms) for state changes; no animation that delays the user. Content descriptions on all icons;
+  respect font scaling; text contrast >= 4.5:1.
+Material icons are available via the existing Compose dependency if present; if androidx.compose.material:material-
+icons-extended is not already a dependency, use the core icon set only (no new dependencies).
+Keep all existing JVM tests green and add Compose-free unit tests for any new pure logic (formatting, chip text).
+Run: GRADLE_USER_HOME=/tmp/gradle-home ./gradlew testDebugUnitTest assembleDebug --offline. Do not commit. Foreground
+only. Finish with the list of screens changed and anything you could not do.

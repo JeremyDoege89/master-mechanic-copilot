@@ -115,6 +115,54 @@ class ParsersTest {
     }
 
     @Test
+    fun packedLivePidsDecodeAfterAts0Ath1() {
+        // Real ATS0+ATH1 reply: headers on, no spaces (Mazda 3 field log).
+        val r = Parsers.frame(transcript("pid-live-pack.txt"))
+        require(r is ElmResult.Data) { "packed PIDs did not parse as data: $r" }
+        val ecus = r.ecus
+        assertEquals(4, ecus.size)
+        assertEquals("7E8", ecus[0].canId)
+        assertArrayEquals(byteArrayOf(0x41, 0x0C, 0x1A, 0xF8.toByte()), ecus[0].bytes)
+        assertEquals(1726.0, Pids.decode(0x0C, ecus[0].bytes.copyOfRange(2, 4)), 1e-9)
+        assertEquals(87.0, Pids.decode(0x05, ecus[1].bytes.copyOfRange(2, 3)), 1e-9)
+        assertEquals(1.31, Pids.decode(0x10, ecus[2].bytes.copyOfRange(2, 4)), 1e-9)
+        assertEquals(0.0, Pids.decode(0x0D, ecus[3].bytes.copyOfRange(2, 3)), 1e-9)
+    }
+
+    @Test
+    fun packedVinMultiframeReassemblesToSyntheticJm1Vin() {
+        // Synthetic JM1 VIN (never an owner's real VIN: the repo is public).
+        val raw = transcript("isotp-vin-pack-jm1.txt")
+        val lines = raw.substringBefore(">").lines().map { it.trim() }.filter { it.isNotEmpty() }
+        // Strip CAN-id prefixes back to PCI bytes, as the driver does with headers on.
+        val pci = lines.map { ln ->
+            val ecu = (Parsers.frame(ln + "\r>") as ElmResult.Data).ecus.single()
+            Parsers.hexOf(ecu.bytes)
+        }
+        val payload = Parsers.reassembleIsoTp(pci)
+        assertEquals("JM1BM9M72S1000001", Parsers.parseVin(payload))
+    }
+
+    @Test
+    fun packedDtcsDecodeToP0133AndP0203() {
+        val ecus = data("dtc-pack.txt")
+        assertEquals(1, ecus.size)
+        assertEquals("7E8", ecus[0].canId)
+        assertArrayEquals(byteArrayOf(0x43, 0x01, 0x33, 0x02, 0x03), ecus[0].bytes)
+        assertEquals(listOf("P0133", "P0203"), Parsers.decodeDtcs(ecus[0].bytes.copyOfRange(1, 5)))
+    }
+
+    @Test
+    fun packedMultiEcuSeparates7E8and7E9() {
+        val ecus = data("multi-ecu-pack.txt")
+        assertEquals(2, ecus.size)
+        assertEquals("7E8", ecus[0].canId)
+        assertEquals("7E9", ecus[1].canId)
+        assertEquals(1726.0, Pids.decode(0x0C, ecus[0].bytes.copyOfRange(2, 4)), 1e-9)
+        assertEquals(1728.0, Pids.decode(0x0C, ecus[1].bytes.copyOfRange(2, 4)), 1e-9)
+    }
+
+    @Test
     fun pidFormulasSpotCheck() {
         assertEquals(90.0, Pids.decode(0x05, byteArrayOf(0x82.toByte())), 1e-9) // ECT 130-40
         assertEquals(-40.0, Pids.decode(0x0F, byteArrayOf(0x00)), 1e-9) // IAT unplugged

@@ -1,0 +1,18 @@
+Live test on the owner's phone (Android 14, moto g) with the bt-live build, all from logcat tag MMC:
+  "Connecting Bluetooth Classic (…:BA)…" then 4 ms later "Bluetooth permission error." on every attempt.
+dumpsys showed BLUETOOTH_CONNECT granted=true (user allowed it) but BLUETOOTH_SCAN granted=false. The connect path calls
+BluetoothAdapter.cancelDiscovery(), which requires BLUETOOTH_SCAN on API 31+, so it throws SecurityException before
+any socket is opened. (I granted SCAN via adb as a stopgap.)
+Fix:
+1. Only call cancelDiscovery() when BLUETOOTH_SCAN is granted (or isDiscovering() and permitted); never let it block a
+   connect. Connecting to a bonded device needs only BLUETOOTH_CONNECT.
+2. Show and log the real exception class + message on every failure (not a generic "permission error"), and which step
+   failed (permission / socket create / connect attempt 1-3 / ATZ / protocol / VIN), so the next field failure is
+   diagnosable from the screen alone.
+3. Pairing screen UX (owner feedback): "Rescan paired does nothing, but the lower button is what pulls up the list of
+   paired devices." Make it one clear control: the paired-device list shows automatically when Bluetooth Classic is
+   selected (after the permission is granted), with a single "Refresh list" action that actually refreshes it, and a
+   short hint "Not listed? Pair it in Android Settings → Bluetooth first (PIN 1234 or 0000)" with a button that opens
+   Settings.ACTION_BLUETOOTH_SETTINGS. Selected device highlighted; Connect disabled until one is selected.
+JVM tests for the permission decision logic (CONNECT only -> connect allowed, no cancelDiscovery) and the failure-step
+reporting. Android build offline (seeded GRADLE_USER_HOME). Do not commit. Foreground only.
