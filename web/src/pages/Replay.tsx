@@ -72,6 +72,9 @@ interface OverlayMask {
   used_concept?: string;
   found?: boolean;
   svg_path?: string;
+  score?: number;
+  rank_label?: string;
+  object_id?: string;
   box?: { x1: number; y1: number; x2: number; y2: number } | { x_min: number; x_max: number; y_min: number; y_max: number };
 }
 
@@ -308,6 +311,20 @@ export default function Replay({ autoJudge, onReport, onLatestReport }: Props) {
             ))}
           </ol>
           <p className="hero-note">Full 60-second script: docs/JUDGES.md in the repo.</p>
+          <div className="card how-built">
+            <h3>How this was built</h3>
+            <p>
+              Built by Muse Code during the event (muse-wonder-1.0 plans and reviews,
+              muse-spark-1.3 builds; prompts and runs are in .agents/).
+            </p>
+            <p>
+              <small>
+                Spark 1.3 reasons and reads · SAM 3.1 masks · Voice Transcribe hears
+                (Android only) · Wonder reviews once per report · Spark Open via
+                Baseten corroborates and falls back — none set probabilities.
+              </small>
+            </p>
+          </div>
         </div>
       ) : null}
       {!autoJudge && !sessionId ? (

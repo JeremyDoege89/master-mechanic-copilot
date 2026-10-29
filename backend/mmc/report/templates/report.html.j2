@@ -109,6 +109,23 @@ pre { white-space: pre-wrap; word-break: break-word; background: var(--card); bo
 <tr><td class="muted">{{ ev.evidence_id[:8] }}…</td><td>{{ ev.type }}</td><td>{% if ev.ai_extracted %}<span class="badge ai">AI ({{ ev.extractor }})</span>{% else %}{{ ev.extractor }}{% endif %}{% if ev.agreement %} · {{ ev.agreement }}{% endif %}</td></tr>
 {% endfor %}
 </table>
+{% if report.sam_overlays %}
+<h2>Vision overlays</h2>
+{% for ov in report.sam_overlays %}
+<h3>Keyframe <span class="muted">{{ ov.evidence_id[:8] }}…</span> ({{ ov.overlays|length }} concept{{ "s" if ov.overlays|length != 1 else "" }})</h3>
+{% for concept in ov.overlays %}
+<p><strong>{{ concept.used_concept or concept.concept }}</strong>{% if concept.found %} <span class="badge ai">found</span>{% else %} <span class="muted">not found</span>{% endif %}</p>
+{% if concept.masks %}
+<table>
+<tr><th>Candidate</th><th>Confidence</th><th>Role</th></tr>
+{% for m in concept.masks %}
+<tr><td class="muted">{{ m.object_id }}</td><td>{{ "%.2f"|format(m.score) if m.score is not none else "—" }}</td><td>{% if m.rank_label == "match" %}<span class="badge ai">match</span>{% else %}<span class="badge">other candidate</span>{% endif %}</td></tr>
+{% endfor %}
+</table>
+{% endif %}
+{% endfor %}
+{% endfor %}
+{% endif %}
 {% if report.fallback_used %}
 <p><span class="badge ai">Second opinion / fallback used (Spark Open)</span></p>
 {% endif %}

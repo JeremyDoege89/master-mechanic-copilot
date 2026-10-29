@@ -26,6 +26,14 @@ export default function BudgetBadge() {
   }, []);
 
   if (!budget) return null;
+  const publicZero = budget.public_mode && (!budget.public_live || budget.public_live.cap_usd === 0);
+  if (publicZero) {
+    return (
+      <p aria-label="API spend">
+        Judge replay uses recorded AI outputs: $0 live spend
+      </p>
+    );
+  }
   const fmt = (n: number) => `$${n.toFixed(2)}`;
   const frac = (spend: number, stop: number) => (stop > 0 ? spend / stop : 0);
   const color = (spend: number, stop: number) => {

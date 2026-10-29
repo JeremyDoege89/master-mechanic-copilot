@@ -22,6 +22,22 @@ android {
         resValue "string", "default_backend_url", mmcBackendUrl
     }
 
+    // Owner signing (M7 §4): the keystore lives OUTSIDE the repo and is
+    // created by the owner (docs/RELEASE.md). Nothing key-related is
+    // committed: passwords come from env / gitignored local.properties.
+    signingConfigs {
+        release {
+            def ksPath = System.getenv("MMC_KEYSTORE_PATH")
+            def ksAlias = System.getenv("MMC_KEYSTORE_ALIAS")
+            if (ksPath != null && ksAlias != null) {
+                storeFile file(ksPath)
+                storePassword System.getenv("MMC_KEYSTORE_PASSWORD")
+                keyAlias ksAlias
+                keyPassword System.getenv("MMC_KEY_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         debug {
             // Dev backend is plain http over Tailscale.
@@ -30,6 +46,12 @@ android {
         release {
             minifyEnabled false
             manifestPlaceholders = [usesCleartext: "false"]
+            // Signed only when the owner exported the keystore env (the
+            // release script refuses otherwise); unsigned otherwise.
+            if (System.getenv("MMC_KEYSTORE_PATH") != null &&
+                System.getenv("MMC_KEYSTORE_ALIAS") != null) {
+                signingConfig signingConfigs.release
+            }
         }
     }
 

@@ -58,6 +58,27 @@ def model_pins() -> dict:
     }
 
 
+def rank_overlay_masks(masks: list) -> list:
+    """Rank SAM candidate masks by confidence (judge fix M7 §2.3a).
+
+    Highest score is the ``match``; the rest are ``other candidate``.
+    Display-only: never mutates the recorded evidence.
+    """
+    def _score(mask: Any) -> float:
+        try:
+            return float((mask or {}).get("score") or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    ranked = sorted(list(masks or []), key=_score, reverse=True)
+    out = []
+    for i, mask in enumerate(ranked):
+        entry = dict(mask)
+        entry["rank_label"] = "match" if i == 0 else "other candidate"
+        out.append(entry)
+    return out
+
+
 def row_origin(evaluator: str) -> str:
     """How a test row was judged: DSP signal, human look, or determinism."""
     if evaluator == "dsp.engine_sound":
@@ -169,16 +190,34 @@ def build_report(session: Any, state: dict) -> dict:
         for rec in llm_records
     )
 
-    sam_overlays = [
-        {
-            "evidence_id": eid,
-            "blob_ref": str(doc.get("blob_ref", "")),
-            "kind": "image",
-            "note": "SAM overlays for this keyframe are served with the vision response.",
-        }
-        for eid, doc in evidence_docs.items()
-        if doc.get("type") == "image" and eid in by_evidence
-    ]
+    sam_overlays = []
+    for eid, doc in evidence_docs.items():
+        if doc.get("type") != "image" or eid not in by_evidence:
+            continue
+        rows = []
+        for overlay in doc.get("overlays", []) or []:
+            rows.append(
+                {
+                    "concept": str(overlay.get("concept", "")),
+                    "used_concept": str(overlay.get("used_concept", "")),
+                    "found": bool(overlay.get("found", False)),
+                    "masks": rank_overlay_masks(overlay.get("masks", []) or []),
+                }
+            )
+        sam_overlays.append(
+            {
+                "evidence_id": eid,
+                "blob_ref": str(doc.get("blob_ref", "")),
+                "kind": "image",
+                "note": "SAM overlays for this keyframe are served with the vision response.",
+                "overlays": rows,
+                # Ranked display copy (match + other candidates with
+                # confidences). The recorded evidence is untouched.
+                "masks": rank_overlay_masks(
+                    [m for overlay in rows for m in overlay.get("masks", [])]
+                ),
+            }
+        )
 
     # Finding #7: gates come from actual acknowledgements in the log —
     # safety_ack events plus the gate recorded on each performed gated

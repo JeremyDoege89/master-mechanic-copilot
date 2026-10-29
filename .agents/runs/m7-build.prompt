@@ -1,0 +1,23 @@
+The plan in .agents/plans/M7.md is approved with these corrections:
+1. Write scripts/spike_voice_asr.py FIRST and print "SPIKE READY" in your output when it compiles, then continue. I run it
+   outside your sandbox while you build; you reconcile in a later job. Build voice.py against provisional fixtures and
+   a fake upstream as planned.
+2. Licence and keystore are the owner's decisions: write LICENSE only if the owner confirms (leave a TODO line in
+   README "Licence: TBD by owner" for now and do NOT add a LICENSE file); the release script and docs/RELEASE.md as
+   planned, no keystore creation.
+3. Two judge-visible fixes from the live site to include in §2:
+   a. SAM returned 3 masks for the concept "battery"; only one is the battery (the others are black plastic boxes).
+      Show each mask's confidence on the overlay, highlight the highest-confidence mask as the match and draw the rest
+      faint and labelled "other candidates", in web and the report. No change to recorded data.
+   b. Trace "Meaning" text reads "...no fault showing up makes this more likely — Unlikely (about 2 in 10)". Make it
+      "...makes this more likely; now unlikely (about 2 in 10)" (direction of the update, then the new band), in
+      levels.py so web and report agree; regenerate the demo bundles offline if their texts change (re-key the demo
+      cache offline if needed, live outputs untouched) and keep make_demo_bundle.py --check green.
+4. README: describe the build honestly and factually: Muse Code wrote the code from AGENTS.md/SPEC.md during the event,
+   driven headlessly with plans and reviews on muse-wonder-1.0 and builds on muse-spark-1.3 (prompts and runs are in
+   .agents/). Do not claim anything about who wrote the prompts.
+Implement the plan in order, each step with its test before the next. Keep the full backend suite under 3 minutes. Run
+the plan's verification commands except owner-run ones and `modal deploy` (backend via .venv/bin/python -m pytest -q;
+Android offline with seeded GRADLE_USER_HOME; web npm ci --offline), fix failures until they pass, add a dated
+docs/DECISIONS.md entry, and do not commit. Foreground commands only. Finish with files created/changed, test counts,
+the acceptance sweep table, and pass/fail of each command.

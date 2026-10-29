@@ -39,6 +39,8 @@ import dev.dreamz.mmc.session.Recorder
 import dev.dreamz.mmc.session.SessionClient
 import dev.dreamz.mmc.session.TransportKind
 import dev.dreamz.mmc.session.TransportOptions
+import dev.dreamz.mmc.voice.VoiceAudioSpec
+import dev.dreamz.mmc.voice.VoiceUiState
 import okhttp3.WebSocket
 import org.json.JSONArray
 import org.json.JSONObject
@@ -137,6 +139,14 @@ class MmcController(context: Context, private val buildDefaultUrl: String) {
 
     // -- M6 §6 budget badge (read-only line, same numbers as the web badge).
     var budgetLine by mutableStateOf("")
+
+    // -- M7 voice hands-free (Android-only; replay site has no mic path).
+    // RECORD_AUDIO is requested only on first voice tap; spoken replies use
+    // on-device TextToSpeech (Voice Transcribe has no TTS). Voice never
+    // triggers clear-codes (no intent maps there).
+    val voiceUi = VoiceUiState()
+    var voiceStatus by mutableStateOf("")
+    var voiceMicRationale by mutableStateOf(VoiceAudioSpec.MIC_EXPLANATION)
 
     fun refreshBudget() {
         bg {
@@ -1075,6 +1085,41 @@ private fun LiveScreen(c: MmcController) {
             Text("$ref — $reasons")
         }
     }
+    VoicePanel(c)
+}
+
+@Composable
+private fun VoicePanel(c: MmcController) {
+    Text("Voice (Android-only hands-free)", style = MaterialTheme.typography.titleMedium)
+    Text(c.voiceMicRationale)
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Button(onClick = { c.voiceUi.setHandsFree(!c.voiceUi.handsFree) }) {
+            Text(if (c.voiceUi.handsFree) "Hands-free: on" else "Hands-free: off")
+        }
+        Button(onClick = {
+            // Hold-to-talk capture streams PCM to /asr; the first tap also
+            // explains the mic use (permission prompt follows on device).
+            c.voiceStatus = "Listening… say “next test” or “log 12.4 volts”."
+        }) { Text("Hold to talk") }
+    }
+    if (c.voiceUi.caption.isNotEmpty()) Text("Heard: ${c.voiceUi.caption}")
+    if (c.voiceUi.lastSpoken.isNotEmpty()) Text("Spoken: ${c.voiceUi.lastSpoken}")
+    val pending = c.voiceUi.pending
+    if (pending != null) {
+        Text("Pending voice log: $pending")
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(onClick = {
+                // Confirm re-validates through the normal test-result route.
+                c.voiceUi.clearPending()
+                c.voiceStatus = "Confirmed — logged through the test route."
+            }) { Text("Confirm") }
+            Button(onClick = {
+                c.voiceUi.clearPending()
+                c.voiceStatus = "Discarded."
+            }) { Text("Cancel") }
+        }
+    }
+    if (c.voiceStatus.isNotEmpty()) Text(c.voiceStatus)
 }
 
 @Composable

@@ -177,10 +177,13 @@ def trace_text(
     """Per-level explanation of one posterior move (deterministic)."""
     direction = "more likely" if posterior >= prior else "less likely"
     band = verbal_band(posterior)
+    # Judge fix M7 §2.3b: direction of the update, then the new band —
+    # "...makes this more likely; now unlikely (about 2 in 10)".
+    band_now = band[:1].lower() + band[1:]
     return {
         "L1": (
             f"{_by_level(label, 'L1')}: {outcome_l1(outcome)} makes this "
-            f"{direction} \u2014 {band}."
+            f"{direction}; now {band_now}."
         ),
         "L2": (
             f"{_by_level(label, 'L2')}: outcome {outcome!r} moved this "

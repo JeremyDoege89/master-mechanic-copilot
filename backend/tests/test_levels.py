@@ -153,6 +153,15 @@ def test_meta_levels_endpoint_lists_levels_and_tools(client):
     assert len(body["tools"]) == 8
 
 
+def test_trace_l1_reads_direction_then_new_band():
+    """Judge fix M7 §2.3b: direction of the update, then the new band."""
+    from mmc import levels
+
+    label = {"L1": "Air leak", "L2": "Intake leak", "L3": "Leak"}
+    texts = levels.trace_text(label, "none", 0.17, 0.24, 1.5)
+    assert texts["L1"] == "Air leak: no fault showing up makes this more likely; now unlikely (about 2 in 10)."
+
+
 def test_verbal_band_uses_natural_frequencies():
     from mmc import levels
 

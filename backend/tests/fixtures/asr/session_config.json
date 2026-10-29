@@ -1,0 +1,1 @@
+{"captured": "spike_voice_asr.py owner run", "channels": 1, "encoding": "pcm16", "keywords": ["trim_idle_vs_2500", "battery_voltage_rest_running", "unmetered air leak", "volts", "next test"], "model": "muse-voice-transcribe-1.0", "provisional": true, "sample_rate_hz": 16000, "type": "session_config"}

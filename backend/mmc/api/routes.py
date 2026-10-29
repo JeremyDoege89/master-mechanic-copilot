@@ -630,6 +630,55 @@ async def get_report_pdf(report_id: str):
     return Response(pdf_mod.render_pdf(report), media_type="application/pdf")
 
 
+@router.websocket("/sessions/{session_id}/asr")
+async def session_asr(websocket: WebSocket, session_id: str):
+    """M7 voice ASR proxy: PCM in, partials verbatim, finals to the log."""
+    from mmc import public as public_mod
+    from mmc.meta import voice as voice_mod
+
+    session = sess.get_registry().get(session_id)
+    if session is None:
+        await websocket.close(code=4404)
+        return
+    if public_mod.is_public():
+        # Paid live call, off on Modal (plan §1).
+        await websocket.close(code=4501)
+        return
+    if session.meta.get("mode") == "replay":
+        await websocket.close(code=4409)
+        return
+    await websocket.accept()
+    proxy = voice_mod.AsrProxy()
+    registry = sess.get_registry()
+
+    async def append_event(payload: dict) -> dict:
+        event = registry.append(session, "asr_segment", payload)
+        await _broadcast(session.id)
+        return event
+
+    async def on_budget_exceeded() -> None:
+        try:
+            await websocket.send_json({"type": "error", "error": "asr budget exceeded"})
+        except Exception:
+            pass
+        await websocket.close(code=4402)
+
+    try:
+        await proxy.run(
+            websocket, session, append_event,
+            send_to_client=websocket.send_text,
+            on_budget_exceeded=on_budget_exceeded,
+        )
+    except WebSocketDisconnect:
+        pass
+    except RuntimeError:
+        # No live upstream until the owner spike pins the WS client lib.
+        try:
+            await websocket.close(code=4500)
+        except Exception:
+            pass
+
+
 @router.websocket("/sessions/{session_id}/ws")
 async def session_ws(websocket: WebSocket, session_id: str):
     session = sess.get_registry().get(session_id)

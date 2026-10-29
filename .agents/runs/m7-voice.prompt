@@ -1,0 +1,29 @@
+I ran scripts/spike_voice_asr.py live (websockets 17.3 installed in backend/.venv for it). Output:
+---
+spike: estimate_asr(3.0s) = $0.000150 on the Meta $120 ledger
+spike: connecting wss://api.meta.ai/v1/asr/realtime model=muse-voice-transcribe-1.0
+spike: session_config keys=['channels', 'encoding', 'keywords', 'model', 'sample_rate_hz', 'type'] keywords=5
+spike: [1] session_config sent, waiting for ack (5 s)...
+spike: [1] ack shape type=error keys=['errorParam', 'errorType', 'message', 'sessionId', 'type']
+spike: [1] ack preview {"errorParam": "audioEncoding", "errorType": "invalid_request_error", "message": "You must specify the 'audioEncoding' attribute", "sessionId": "voyager/duplex/1E5519344C4F460881D644A2C784E831", "type
+spike: [2] streaming 96000 PCM bytes in 30 binary frames...
+spike: [2] first binary frame 3200 bytes sent
+spike: FAILED: ConnectionClosedError: received 1008 (policy violation) Bad Request; then sent 1008 (policy violation) Bad Request
+---
+The handshake field names were guessed. Meta's real protocol docs are now in docs/research/meta-voice/
+(api-reference_voice_realtime.md, api-reference_voice_schemas.md, speech-to-text.md). Read them fully. Key points: send
+the handshake as the first JSON text frame within 10 s (camelCase fields, e.g. "audioEncoding": "PCM_24KHZ"); the
+endpoint does NOT read the HTTP Authorization header, the credential travels in the handshake; raw PCM binary frames;
+end input with {"type":"endStream"} and read until close 1000; server "transcript" events with a "final" flag; "error"
+events; close codes as documented; keyword biasing / endpointing / session limits per the schemas.
+Do:
+1. Rewrite the spike's handshake and the proxy's session_config() to the documented schema, including keyword biasing
+   if the schema supports it, and the audio format the Android client sends (pick a documented encoding; change the
+   Android AudioRecord rate to match, e.g. 24 kHz if PCM_24KHZ).
+2. The key is inside the handshake frame: make sure it is never logged, never in fixtures, never in asr_segment
+   events, never echoed to the client; test that with a fake upstream that records frames.
+3. Add websockets to backend/pyproject.toml with a DECISIONS note (needed for the upstream WS client; FastAPI serves the
+   client side).
+4. Make the spike print each server event type and save key-free fixtures; I will rerun it live after you finish and
+   you flip fixtures to live in a follow-up.
+Run the backend suite (< 3 min), Android build (offline, seeded GRADLE_USER_HOME). Do not commit. Foreground only.

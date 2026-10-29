@@ -169,8 +169,17 @@ def test_sam_and_voice_have_no_fallback():
     # must be absent is any wire to the Meta->Baseten fallback helper.
     assert "meta.fallback" not in sam_src
     assert "call_text_or_image" not in sam_src
-    assert not (meta_dir / "voice.py").exists()  # no substitute to wire
+    # M7 adds meta/voice.py (ASR proxy): it exists but must wire no
+    # Meta->Baseten fallback either (plan §1: SAM/voice never fall back).
+    voice_src = (meta_dir / "voice.py").read_text()
+    assert "meta.fallback" not in voice_src
+    assert "call_text_or_image" not in voice_src
+    assert "spark_open" not in voice_src
     import mmc.meta.sam as sam_mod
 
     assert not hasattr(sam_mod, "fallback")
     assert not hasattr(sam_mod, "call_text_or_image")
+    import mmc.meta.voice as voice_mod
+
+    assert not hasattr(voice_mod, "fallback")
+    assert not hasattr(voice_mod, "call_text_or_image")

@@ -45,6 +45,19 @@ interface Report {
     agreement: string | null;
   }[];
   fallback_used: boolean;
+  sam_overlays?: {
+    evidence_id: string;
+    blob_ref: string;
+    kind: string;
+    note: string;
+    overlays?: {
+      concept?: string;
+      used_concept?: string;
+      found?: boolean;
+      masks?: { object_id?: string; score?: number; rank_label?: string }[];
+    }[];
+    masks?: { object_id?: string; score?: number; rank_label?: string }[];
+  }[];
   safety_notes: string[];
   stop_triggers?: string[];
   vin_last6: string | null;
@@ -291,6 +304,54 @@ export default function Report({ reportId }: Props) {
             </ul>
             {report.fallback_used ? <p>Second opinion / fallback used (Spark Open).</p> : null}
           </div>
+
+          {report.sam_overlays && report.sam_overlays.length > 0 ? (
+            <div className="card">
+              <h3>Vision overlays</h3>
+              {report.sam_overlays.map((ov) => (
+                <div key={ov.evidence_id}>
+                  <p>
+                    <strong>Keyframe</strong>{" "}
+                    <small className="t-raw">{ov.evidence_id.slice(0, 8)}…</small>
+                  </p>
+                  {(ov.overlays ?? []).map((c, i) => (
+                    <div key={i}>
+                      <p>
+                        <strong>{c.used_concept || c.concept}</strong>{" "}
+                        {c.found ? <span className="badge ai">found</span> : <span>not found</span>}
+                      </p>
+                      {(c.masks ?? []).length > 0 ? (
+                        <table>
+                          <thead>
+                            <tr>
+                              <th>Candidate</th>
+                              <th>Confidence</th>
+                              <th>Role</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {(c.masks ?? []).map((m, j) => (
+                              <tr key={j}>
+                                <td><small className="t-raw">{m.object_id}</small></td>
+                                <td>{typeof m.score === "number" ? m.score.toFixed(2) : "—"}</td>
+                                <td>
+                                  {m.rank_label === "match" ? (
+                                    <span className="badge ai">match</span>
+                                  ) : (
+                                    <span className="badge">other candidate</span>
+                                  )}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
+          ) : null}
 
           {report.safety_notes.length > 0 ? (
             <div className="card">
