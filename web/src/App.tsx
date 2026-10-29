@@ -46,7 +46,7 @@ export default function App() {
           <span className="brand-mark" aria-hidden="true">MMC</span>
           <span className="brand-text">
             <strong>Master Mechanic Copilot</strong>
-            <small>{judge ? "Judge demo · simulated Ford, real AI outputs" : "Vehicle diagnosis copilot"}</small>
+            <small>{judge ? "Judge demo · real + simulated, real AI outputs" : "Vehicle diagnosis copilot"}</small>
           </span>
         </div>
         <div className="topbar-right">

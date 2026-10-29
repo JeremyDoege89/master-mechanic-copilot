@@ -168,8 +168,9 @@ def replay_bundle_bytes(
     session = registry.create(
         user_level=user_level, tools=list(tools), mode="replay", vehicle=vehicle
     )
-    # Bundle-embedded blobs (demo photo bytes) land in the blob store so
-    # the evidence-scoped GET can serve them on the replay session.
+    # Bundle-embedded blobs (demo photo bytes, plus every referenced blob
+    # for real-vehicle exports) land in the blob store so the
+    # evidence-scoped GET can serve them on the replay session.
     # M7 review #8: ownership is recorded for the new session, so the
     # download gate (ownership + own-log reference) passes on replays.
     from mmc.store import blobs as blob_store
@@ -180,6 +181,20 @@ def replay_bundle_bytes(
             raise mmrec.MmrecError(f"{label}: blob name/hash mismatch on {name}")
         blob_store.put(data)
         sess.record_session_blob(session.id, digest)
+    # Real-vehicle exports carry the cached model responses the session
+    # used (llm_cache/... members) so replay and report rebuilds stay $0
+    # without network: seed any missing cache files before folding.
+    import os as _os
+    from pathlib import Path as _Path
+
+    for name, data in mmrec.cache_members(members).items():
+        rel = name[len(mmrec.LLM_CACHE_PREFIX):]
+        if not rel or rel.startswith("/") or ".." in rel.split("/"):
+            raise mmrec.MmrecError(f"{label}: bad cache member {name!r}")
+        dest = _Path(_os.environ.get("DATA_DIR", "./data")) / "llm_cache" / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if not dest.exists():
+            dest.write_bytes(data)
     fold_rows(session, rows)
     restore_reports(session)
     return session
@@ -226,3 +241,66 @@ def fixture_bytes(name: str) -> bytes:
     if not path.exists():
         raise FileNotFoundError(f"unknown fixture {name!r}")
     return path.read_bytes()
+
+
+def _fixture_search_dirs() -> list:
+    """Seeded fixtures first, repo copy as fallback (mirrors fixture_bytes)."""
+    from pathlib import Path as _Path
+
+    seeded = sess.data_root() / "fixtures" / "sessions"
+    dirs = []
+    try:
+        if seeded.is_dir():
+            dirs.append(seeded)
+    except OSError:
+        pass
+    repo = repo_fixtures_dir()
+    if repo not in dirs:
+        dirs.append(repo)
+    return [d for d in dirs if isinstance(d, _Path)]
+
+
+def list_fixtures() -> list[dict]:
+    """Judge-landing inventory: every bundle, real-vehicle first.
+
+    Merges the seeded ``DATA_DIR/fixtures/sessions`` dir with the repo
+    copy (seeded wins on name clash; Modal seeds new/changed bundles on
+    boot so real-vehicle drops appear with no code change). Each entry
+    carries ``name``, ``origin`` (``"real"`` sorts first), ``label`` and
+    ``display_label`` from ``meta.json``. Unreadable bundles are skipped,
+    never fatal to the landing.
+    """
+    import json as _json
+
+    seen: dict[str, dict] = {}
+    for directory in _fixture_search_dirs():
+        try:
+            names = sorted(p.name for p in directory.glob("*.mmrec") if p.is_file())
+        except OSError:
+            continue
+        for name in names:
+            if name in seen:
+                continue
+            meta: dict = {}
+            try:
+                members = mmrec.load(directory / name)
+                meta = _json.loads(members["meta.json"].decode("utf-8"))
+                if not isinstance(meta, dict):
+                    meta = {}
+            except Exception:
+                meta = {}
+            origin = mmrec.bundle_origin(meta)
+            if origin != "real" and name.startswith("real-"):
+                origin = "real"
+            seen[name] = {
+                "name": name,
+                "origin": origin,
+                "label": str(meta.get("label", "")),
+                "display_label": mmrec.bundle_display_label(meta, name),
+                "scenario": str(meta.get("scenario", "")),
+            }
+    fixtures = sorted(
+        seen.values(),
+        key=lambda e: (0 if e["origin"] == "real" else 1, e["display_label"].lower(), e["name"]),
+    )
+    return fixtures

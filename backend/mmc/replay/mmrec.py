@@ -24,6 +24,17 @@ FORMAT = "mmrec/1"
 DATA_MEMBERS = ("transcript.jsonl", "events.jsonl", "meta.json")
 MANIFEST = "manifest.json"
 
+# Judge bundles (M6B demo + real-vehicle exports): extra members beyond the
+# three data members. Demo bundles embed only ``blobs/<sha>`` photo bytes;
+# real-vehicle exports (scripts/export_session_bundle.py) additionally carry
+# the session report(s) and the cached model responses the session used, so
+# replay stays $0 without network.
+BLOB_PREFIX = "blobs/"
+REPORT_PREFIX = "reports/"
+LLM_CACHE_PREFIX = "llm_cache/"
+REAL_LABEL = "real vehicle, real AI outputs"
+SIM_LABEL = "simulated vehicle, real AI outputs"
+
 
 class MmrecError(ValueError):
     """Raised when a bundle is missing members or fails hash verification."""
@@ -33,7 +44,32 @@ def sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-BLOB_PREFIX = "blobs/"
+def bundle_origin(meta: dict) -> str:
+    """Judge-landing group for one bundle meta: ``"real"`` sorts first.
+
+    Real-vehicle exports carry ``label == REAL_LABEL`` (or ``origin ==
+    "real"`` / a ``real-`` filename); everything else is simulated.
+    """
+    try:
+        if str(meta.get("origin", "")).lower() == "real":
+            return "real"
+        if str(meta.get("label", "")) == REAL_LABEL:
+            return "real"
+    except Exception:
+        pass
+    return "sim"
+
+
+def bundle_display_label(meta: dict, fallback_name: str = "") -> str:
+    """Human label for the judge landing (owner --label for real bundles)."""
+    for key in ("display_label", "title", "label"):
+        try:
+            value = meta.get(key)
+        except Exception:
+            value = None
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return fallback_name
 
 
 def create(
@@ -141,6 +177,16 @@ def verify_members(members: dict[str, bytes], label: str = "<memory>") -> dict:
 def blob_members(members: dict[str, bytes]) -> dict[str, bytes]:
     """Bundle-embedded blobs (``blobs/<sha256>`` members)."""
     return {n: b for n, b in members.items() if n.startswith(BLOB_PREFIX)}
+
+
+def cache_members(members: dict[str, bytes]) -> dict[str, bytes]:
+    """Bundle-embedded cached model responses (``llm_cache/...`` members)."""
+    return {n: b for n, b in members.items() if n.startswith(LLM_CACHE_PREFIX)}
+
+
+def report_members(members: dict[str, bytes]) -> dict[str, bytes]:
+    """Bundle-embedded session reports (``reports/<id>.json`` members)."""
+    return {n: b for n, b in members.items() if n.startswith(REPORT_PREFIX)}
 
 
 def verify_bytes(data: bytes, label: str = "<memory>") -> dict:

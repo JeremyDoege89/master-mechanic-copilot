@@ -23,9 +23,29 @@ interface Props {
 const JUDGE_FIXTURE = "sim-vacuum-leak.mmrec";
 const COIL_FIXTURE = "sim-coil-unplugged.mmrec";
 
+interface FixtureEntry {
+  name: string;
+  origin: string;
+  label: string;
+  display_label: string;
+  scenario: string;
+}
+
+function orderedFixtures(list: FixtureEntry[]): FixtureEntry[] {
+  return [...list].sort((a, b) => {
+    const ao = a.origin === "real" ? 0 : 1;
+    const bo = b.origin === "real" ? 0 : 1;
+    if (ao !== bo) return ao - bo;
+    const al = (a.display_label || a.name).toLowerCase();
+    const bl = (b.display_label || b.name).toLowerCase();
+    if (al !== bl) return al < bl ? -1 : 1;
+    return a.name < b.name ? -1 : 1;
+  });
+}
+
 const JUDGE_HEADLINE = "Watch a vacuum leak get caught.";
 const JUDGE_HERO_1 =
-  "This is a recorded-style investigation of a simulated Ford with a vacuum leak.";
+  "These are recorded investigations — real-vehicle bundles first when the owner has exported one, simulated Fords after — all with real recorded AI outputs.";
 const JUDGE_HERO_2 =
   "Every suspect probability is computed by deterministic code — the AI only reads photos, manuals and sounds; press play and watch it converge.";
 
@@ -108,6 +128,8 @@ export default function Replay({ autoJudge, onReport, onLatestReport }: Props) {
   );
   const [reportId, setReportId] = useState<string | null>(null);
   const [drawerOpen, setDrawerOpen] = useState<boolean>(!!autoJudge);
+  const [fixtures, setFixtures] = useState<FixtureEntry[] | null>(null);
+  const [playedOrigin, setPlayedOrigin] = useState<string>("sim");
 
   const loadSession = useCallback(
     async (id: string, replaySpeed: number, startAtZero: boolean) => {
@@ -141,9 +163,14 @@ export default function Replay({ autoJudge, onReport, onLatestReport }: Props) {
   );
 
   const playFixture = useCallback(
-    async (fixture: string) => {
+    async (fixture: string, origin?: string) => {
       try {
         setStatus("Loading demo…");
+        if (origin) setPlayedOrigin(origin);
+        else {
+          const known = (fixtures ?? []).find((f) => f.name === fixture);
+          setPlayedOrigin(known?.origin ?? "sim");
+        }
         const r = await apiPost<{ session_id: string; speed: number }>("/replay", {
           fixture,
         });
@@ -154,8 +181,23 @@ export default function Replay({ autoJudge, onReport, onLatestReport }: Props) {
         );
       }
     },
-    [loadSession],
+    [fixtures, loadSession],
   );
+
+  useEffect(() => {
+    if (!autoJudge) return;
+    let live = true;
+    apiGet<{ fixtures: FixtureEntry[] }>("/fixtures")
+      .then((r) => {
+        if (live) setFixtures(orderedFixtures(r.fixtures ?? []));
+      })
+      .catch(() => {
+        if (live) setFixtures(null);
+      });
+    return () => {
+      live = false;
+    };
+  }, [autoJudge]);
 
   useEffect(() => {
     if (!sessionId) return;
@@ -297,13 +339,36 @@ export default function Replay({ autoJudge, onReport, onLatestReport }: Props) {
           <h2 className="hero-title">{JUDGE_HEADLINE}</h2>
           <p className="hero-sub">{JUDGE_HERO_1} {JUDGE_HERO_2}</p>
           <p className="hero-cta">
-            <button className="primary big" onClick={() => void playFixture(JUDGE_FIXTURE)}>
+            <button
+              className="primary big"
+              onClick={() => {
+                const list = orderedFixtures(fixtures ?? []);
+                const first = list[0]?.name ?? JUDGE_FIXTURE;
+                const origin = list[0]?.origin ?? "sim";
+                void playFixture(first, origin);
+              }}
+            >
               Play the investigation
             </button>
-            <button className="ghost" onClick={() => void playFixture(COIL_FIXTURE)}>
+            <button className="ghost" onClick={() => void playFixture(COIL_FIXTURE, "sim")}>
               Play the coil demo instead
             </button>
           </p>
+          {fixtures && fixtures.length > 0 ? (
+            <ul className="fixture-list">
+              {orderedFixtures(fixtures).map((f) => (
+                <li key={f.name}>
+                  <button className="ghost" onClick={() => void playFixture(f.name, f.origin)}>
+                    Play {f.display_label || f.name}
+                  </button>{" "}
+                  <span className={f.origin === "real" ? "badge real" : "badge sim"}>
+                    {f.origin === "real" ? "Real vehicle · real AI outputs" : "Simulated · real AI outputs"}
+                  </span>{" "}
+                  <small className="t-raw">{f.name}</small>
+                </li>
+              ))}
+            </ul>
+          ) : null}
           <ol className="checklist">
             {JUDGE_CHECKLIST.map((item, i) => (
               <li key={item}>
@@ -360,7 +425,9 @@ export default function Replay({ autoJudge, onReport, onLatestReport }: Props) {
           <div className="statusbar" aria-label="Session status">
             <span className="mark">MMC</span>
             <span>Vehicle {vin ? `····${vin}` : "—"}</span>
-            <span className="chip">Simulated vehicle · real AI outputs</span>
+            <span className="chip">
+              {playedOrigin === "real" ? "Real vehicle · real AI outputs" : "Simulated vehicle · real AI outputs"}
+            </span>
             {reportId ? <span className="chip ok">Report ready</span> : null}
             <span className="spacer" />
             <span role="group" aria-label="Experience level">

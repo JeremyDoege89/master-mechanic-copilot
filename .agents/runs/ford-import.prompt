@@ -13,6 +13,8 @@ command, no hand editing:
    dir, verify each (mmrec verify + replay_check), and print the matching export command.
 4. Tests: export of a session built by the existing demo generator round-trips (export -> replay -> identical state and
    report), missing-blob refusal, VIN truncation, landing ordering.
+5. docs/JUDGES.md is stale: it says "the highest-confidence mask is the match" and "photo bytes are not bundled". Fix
+   both to match the current site (no match claimed; photo shown with candidate overlays).
 Never print secret values. Keep the backend suite under 3 minutes. Run backend suite, ci_parity.sh, make_demo_bundle.py
 --check, replay_check, web build, acceptance_sweep.sh. Add a short "Turning a real session into a judge demo" section to
 docs/JUDGES.md (owner-facing) and a DECISIONS entry. Do not commit. Foreground only.

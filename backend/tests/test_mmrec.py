@@ -20,9 +20,13 @@ def test_all_session_bundles_verify():
         manifest = mmrec.verify(bundle)
         assert {"transcript.jsonl", "events.jsonl", "meta.json"} <= set(manifest["files"])
         extras = set(manifest["files"]) - {"transcript.jsonl", "events.jsonl", "meta.json"}
-        assert all(e.startswith("blobs/") for e in extras), (bundle, extras)
+        assert all(
+            e.startswith((mmrec.BLOB_PREFIX, mmrec.REPORT_PREFIX, mmrec.LLM_CACHE_PREFIX))
+            for e in extras
+        ), (bundle, extras)
         for e in extras:
-            assert manifest["files"][e] == e.split("/")[-1], (bundle, e)
+            if e.startswith(mmrec.BLOB_PREFIX):
+                assert manifest["files"][e] == e.split("/")[-1], (bundle, e)
 
 
 def test_sim_healthy_bundle_shape():

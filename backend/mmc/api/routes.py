@@ -230,6 +230,21 @@ async def post_replay(body: ReplayBody):
     return {"session_id": session.id, "speed": body.speed}
 
 
+@router.get("/fixtures")
+async def list_fixtures():
+    """Judge-landing inventory: every fixture bundle, real-vehicle first.
+
+    Real-vehicle exports (``label == "real vehicle, real AI outputs"``)
+    sort before simulated bundles; each entry carries its display label
+    so the landing needs no hand editing when the owner drops a new
+    ``real-*.mmrec`` into the fixtures dir (Modal reseeds on boot).
+    Public-safe: bundle names + labels only, no session data.
+    """
+    from mmc.replay import runner
+
+    return {"fixtures": runner.list_fixtures()}
+
+
 async def read_upload_capped(
     file: UploadFile, request: Request, limit: int | None = None
 ) -> bytes:
