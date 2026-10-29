@@ -26,7 +26,7 @@ SAM 3.1 finds parts, Voice Transcribe keeps hands free, and Muse Code built it.
 | Repo | Public on GitHub (`JeremyDoege89/master-mechanic-copilot`) |
 | `.env` | Created from `.env.example` without the key (the key comes from `~/.config/meta/model-api.env` via your shell) |
 | Phone (moto g, adb over Tailscale) | Connected Oct 28 |
-| Code | Written by Muse Code, driven headlessly (`.agents/muse-run.sh`; plans in `.agents/plans/`). **Done (Oct 29 AM): M0-M3, M4 built (Ford check pending), M5 vision, upload mode, Spark Open (second opinion, fallback, engine-sound DSP), SAM performance fix, all 15 Wonder review findings fixed.** All live API paths verified (Spark, SAM image + video, Files API, Baseten). 342 backend + 84 Android tests; suite under 2 min. **M6 building now.** Waiting on owner: Ford baseline/M4 check, M5 photos. |
+| Code | Written by Muse Code, driven headlessly (`.agents/muse-run.sh`; plans in `.agents/plans/`). **Done (Oct 29 AM): M0-M3, M4 built (Ford check pending), M5 vision, upload mode, Spark Open (second opinion, fallback, engine-sound DSP), SAM performance fix, all 15 Wonder review findings fixed.** All live API paths verified (Spark, SAM image + video, Files API, Baseten). 342 backend + 84 Android tests; suite under 2 min. **M6 done** (levels, safety gates, report + Wonder review, web Replay/Report, budget badge) and deployed on Modal. **Next: M6B** (full judge demo bundle + web design pass), M6 review running. Waiting on owner: Ford baseline/M4 check, M5 photos. |
 | Model routing | Checked Oct 28 against `GET /v1/models`. **Product:** Spark 1.3 for reasoning, vision, instrument reading and PDF/video extraction; SAM 3.1 for masks and tracking; Voice Transcribe for hands-free; Wonder once per report for review; Muse Image kept out of diagnosis. **Muse Code:** `*-plan` and `*-review` jobs run on `muse-wonder-1.0`, builds and fixes on `muse-spark-1.3` (high), set in `.agents/muse-run.sh`. Standard IDs only, never `-contributor`. |
 | CI | GitHub runs backend tests + replay check + web build; Android builds and tests run on dreamz-code (see DECISIONS) |
 
@@ -99,7 +99,8 @@ Later:
 
 7. [ ] Thu Oct 29: car time for the baseline recording (Ford #1, phone paired to the ELM327).
 8. [ ] Sat Oct 31: planted-fault recording session, 2 vehicles, daylight.
-9. [ ] Sun Nov 1: cloud host for the judging period is **Modal** (sponsor credits you were awarded). Before then, put the
+9. [x] Cloud host: **Modal**, live Oct 29 at https://jeremydoege89--mmc-fastapi-app.us-east.modal.run (replay-only,
+       $0 public spend; smoke test passes). Original note: cloud host for the judging period is **Modal** (sponsor credits you were awarded). Before then, put the
        Modal token in place: `uv tool install modal && modal token set --token-id <id> --token-secret <secret>`.
        Baseten key (also awarded): save to `~/.config/baseten/api.env` as `BASETEN_API_KEY=...` (chmod 600).
 10. [ ] Mon Nov 2: demo footage (driveway, CEL on, voice-over).
