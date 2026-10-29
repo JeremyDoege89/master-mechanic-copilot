@@ -241,21 +241,31 @@ def _chunks(samples: list[float], rate: int, chunk_s: float = 1.0) -> list[list[
 
 
 def detect_tone(samples: list[float], rate: int) -> dict | None:
-    """Narrowband squeal: 2–6 kHz peak standing out of the local floor."""
+    """Narrowband squeal: 2–6 kHz peak standing out of the local floor.
+
+    Finding #11: every 1 s chunk is searched for candidate peaks (a squeal
+    starting after the user walks to the engine lives in a later chunk),
+    then the winning bin must persist across chunks.
+    """
     parts = _chunks(samples, rate)
     if not parts:
         return None
     coarse = [TONE_MIN_HZ + i * 100.0 for i in range(int((TONE_MAX_HZ - TONE_MIN_HZ) / 100) + 1)]
-    mags = _goertzel_mags(parts[0][: rate // 2], rate, coarse)
-    floor = _median(mags) or 1e-12
-    peak_idx = max(range(len(mags)), key=lambda i: mags[i])
-    ratio = mags[peak_idx] / floor
-    if ratio < TONE_RATIO_MIN:
+    best_ratio, best_idx, best_part = 0.0, 0, parts[0]
+    for part in parts:
+        mags = _goertzel_mags(part[: rate // 2], rate, coarse)
+        floor = _median(mags) or 1e-12
+        peak_idx = max(range(len(mags)), key=lambda i: mags[i])
+        ratio = mags[peak_idx] / floor
+        if ratio > best_ratio:
+            best_ratio, best_idx, best_part = ratio, peak_idx, part
+    if best_ratio < TONE_RATIO_MIN:
         return None
-    centre = coarse[peak_idx]
+    ratio = best_ratio
+    centre = coarse[best_idx]
     fine = [centre + d for d in range(-100, 101, 10)]
     fine = [f for f in fine if TONE_MIN_HZ <= f <= TONE_MAX_HZ]
-    fine_mags = _goertzel_mags(parts[0][:rate], rate, fine)
+    fine_mags = _goertzel_mags(best_part[:rate], rate, fine)
     best = max(range(len(fine)), key=lambda i: fine_mags[i])
     peak_hz = fine[best]
     # Persistence: the same bin must stand out in each 1 s chunk.
@@ -282,22 +292,31 @@ def detect_tone(samples: list[float], rate: int) -> dict | None:
 
 
 def hiss_metrics(samples: list[float], rate: int) -> dict:
-    """4–8 kHz broadband energy ratio + in-band spectral flatness."""
-    window = samples[:rate] if len(samples) >= rate else samples
+    """4–8 kHz broadband energy ratio + in-band spectral flatness.
+
+    Finding #11: scored on the strongest 1 s window, not just the first —
+    a hiss starting mid-clip must not be diluted by the clean opening.
+    """
+    windows = _chunks(samples, rate) or [samples]
     band = [HISS_BAND_MIN + i * 500.0 for i in range(int((HISS_BAND_MAX - HISS_BAND_MIN) / 500) + 1)]
     low = [250.0, 500.0, 1000.0, 2000.0]
-    band_mags = _goertzel_mags(window, rate, band)
-    low_mags = _goertzel_mags(window, rate, low)
-    e_band = sum(m * m for m in band_mags)
-    e_total = e_band + sum(m * m for m in low_mags)
-    ratio = (e_band / e_total) if e_total > 0 else 0.0
-    mean = sum(band_mags) / len(band_mags) if band_mags else 0.0
-    if mean <= 0:
-        flatness = 0.0
-    else:
-        log_sum = sum(math.log(max(m, 1e-12)) for m in band_mags) / len(band_mags)
-        flatness = math.exp(log_sum) / mean
-    return {"band_ratio": ratio, "flatness": flatness}
+    best: dict | None = None
+    for window in windows:
+        band_mags = _goertzel_mags(window, rate, band)
+        low_mags = _goertzel_mags(window, rate, low)
+        e_band = sum(m * m for m in band_mags)
+        e_total = e_band + sum(m * m for m in low_mags)
+        ratio = (e_band / e_total) if e_total > 0 else 0.0
+        mean = sum(band_mags) / len(band_mags) if band_mags else 0.0
+        if mean <= 0:
+            flatness = 0.0
+        else:
+            log_sum = sum(math.log(max(m, 1e-12)) for m in band_mags) / len(band_mags)
+            flatness = math.exp(log_sum) / mean
+        candidate = {"band_ratio": ratio, "flatness": flatness}
+        if best is None or ratio > best["band_ratio"]:
+            best = candidate
+    return best or {"band_ratio": 0.0, "flatness": 0.0}
 
 
 def detect_hiss(

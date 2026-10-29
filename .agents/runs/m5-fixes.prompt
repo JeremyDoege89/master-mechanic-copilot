@@ -1,0 +1,19 @@
+Fix every finding in .agents/reviews/M5-M5U.md (a Wonder code review; findings 1-4 are blocking). Read it fully first.
+For each finding: write a failing test that reproduces the stated scenario, then fix it, then confirm the test passes.
+Notes on specific findings:
+- #1 and #12: one process-wide tracker per provider (meta $120, baseten $80) shared by every client and bind(), with a
+  lock around check/add; a lock around EventStore.append's seq/head read-modify-write. M6 will add a GET /budget on top
+  of this registry, so expose get_tracker(name).
+- #2 and #9: cache keys use the sha256 of the ORIGINAL input bytes everywhere (Spark image, SAM image, SAM video,
+  Spark Open), with the sent-bytes hash and scale kept as record metadata. Old cached fixtures may need re-keying;
+  re-key them with a committed script rather than re-recording.
+- #3: when returned usage yields cost <= 0 but the estimate is positive, book the estimate and flag it in the record.
+- #4: parse CSV row-wise (drop or null-mark the whole row on a bad cell) and take displacement from the session's
+  vehicle; when unknown, skip the MAF plausibility derivation with a reported reason instead of assuming 2.0 L.
+- #13: make manual SpecRanges decide the outcome when the test has a numeric expectation (SPEC §5 priority
+  manual > kp > physics), with a test where a manual range flips the outcome.
+- #10: fix the Android keyframe encoder (respect row/pixel strides, real JPEG via Bitmap.compress) with a JVM test of
+  the stride handling.
+Keep the full backend suite under 3 minutes. Run the backend suite (.venv/bin/python -m pytest -q), replay_check and
+the Android build (offline, seeded GRADLE_USER_HOME) until green. Run commands in the foreground. Add a dated
+docs/DECISIONS.md entry. Do not commit. Finish with a table: finding #, fix, test name, status.

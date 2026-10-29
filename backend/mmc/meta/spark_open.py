@@ -214,15 +214,14 @@ class SparkOpenClient:
                 f"{DEFAULT_SPARK_OPEN_MODEL!r} (env {MODEL_ENV_VAR})"
             )
         self.model = pinned
+        # Process-wide ledger (finding #1): every default client shares
+        # the $80 Baseten tracker, so spend accumulates across bind() calls.
         if budget is not None:
             self.budget = budget
         else:
-            raw = os.environ.get(BASETEN_BUDGET_ENV, str(DEFAULT_BASETEN_HARD_STOP_USD))
-            try:
-                hard_stop = float(raw)
-            except ValueError:
-                hard_stop = DEFAULT_BASETEN_HARD_STOP_USD
-            self.budget = BudgetTracker(hard_stop_usd=hard_stop)
+            from .budget import get_tracker as _get_tracker
+
+            self.budget = _get_tracker("baseten")
         if cache_dir is None:
             cache_dir = Path(os.environ.get("DATA_DIR", "./data")) / "llm_cache" / "baseten"
         self.cache_dir = Path(cache_dir)
@@ -335,6 +334,12 @@ class SparkOpenClient:
         usage = _response_usage(response)
         latency_s = time.time() - t_start
         actual = actual_cost_from_usage(self.model, usage, provider="baseten")
+        estimated = False
+        if actual <= 0.0 and estimate_usd > 0.0:
+            # Finding #3: empty/unknown usage must not make a paid call
+            # free in the ledger — book the pre-call estimate and flag it.
+            actual = estimate_usd
+            estimated = True
         self.budget.add(actual)
         result = SparkOpenResult(
             model=self.model,
@@ -346,6 +351,8 @@ class SparkOpenClient:
             request_sha=sha,
         )
         record = _open_record(self.model, request, result, latency_s=latency_s)
+        if estimated:
+            record["cost_estimated"] = True
         self._cache_write(sha, record)
         if self._on_call is not None:
             self._on_call(record)

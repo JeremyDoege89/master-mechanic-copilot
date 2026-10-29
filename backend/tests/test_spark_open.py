@@ -114,6 +114,22 @@ def test_cache_hit_zero_and_replay_miss_raises(tmp_path):
     assert replay.budget.spend_usd == 0.0
 
 
+def test_empty_usage_books_estimate_and_flags(tmp_path):
+    """Finding #3 (Baseten half): usage={} must not make a call free."""
+    from types import SimpleNamespace as _NS
+
+    def transport(model, kwargs):
+        msg = _NS(content="x", reasoning_content="r")
+        return _NS(choices=[_NS(message=msg)], usage={})
+
+    client = _client(tmp_path, transport)
+    result, record = client.chat_text("s", "u")
+    assert result.cost_usd > 0.0
+    assert client.budget.spend_usd == pytest.approx(result.cost_usd)
+    assert record["cost_usd"] == pytest.approx(result.cost_usd)
+    assert record.get("cost_estimated") is True
+
+
 def test_429_then_success(tmp_path):
     attempts = {"n": 0}
 

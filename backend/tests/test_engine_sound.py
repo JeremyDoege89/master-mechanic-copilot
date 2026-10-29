@@ -94,6 +94,53 @@ def test_narrowband_tone_fires_with_expected_numbers():
     assert res["details"]["duration_s"] >= 1.0
 
 
+def _synth_late(kind: str, onset_s: float = 2.5) -> list[float]:
+    """Non-stationary clip: clean until onset_s, then the fault signature.
+
+    Finding #11: detectors that only examine the first second report
+    these as normal.
+    """
+    n = int(SR * DUR)
+    out = [0.0] * n
+    rnd = random.Random(11)
+
+    def harm(t: float, amp: float = 1.0) -> float:
+        v = 0.0
+        for h, a in ((1, 0.5), (2, 0.3), (3, 0.2), (4, 0.12)):
+            v += a * math.sin(2 * math.pi * h * F_FIRE * t)
+        return v * amp
+
+    noise_bed = [rnd.random() * 2 - 1 for _ in range(n)]
+    if kind == "late_hiss":
+        # Highpass only the noise bed (vacuum hiss is broadband): the
+        # early segment then keeps clean-like character instead of the
+        # whiten-everything effect of filtering the whole mix.
+        noise_bed = [noise_bed[i] - 0.9 * noise_bed[i - 1] if i else 0.0 for i in range(n)]
+    for i in range(n):
+        t = i / SR
+        noise = noise_bed[i]
+        late = t >= onset_s
+        if kind == "late_tone":
+            out[i] = harm(t) * 0.5 + (0.30 * math.sin(2 * math.pi * 3500 * t) if late else 0.0) + 0.02 * noise
+        elif kind == "late_hiss":
+            out[i] = harm(t) * 0.6 + ((0.25 * noise) if late else (0.01 * noise))
+    peak = max(abs(v) for v in out) or 1.0
+    return [v / peak * 0.9 for v in out]
+
+
+def test_late_squeal_still_detected():
+    """A squeal starting after the user walks to the engine (2.5 s in)."""
+    res = es.analyze(_wav(_synth_late("late_tone")), RPM, CYL)
+    assert res["outcome"] == "belt_bearing_tone"
+    assert res["details"]["peak_hz"] == 3500.0 or abs(res["details"]["peak_hz"] - 3500) <= 150
+
+
+def test_late_hiss_still_detected():
+    """Broadband hiss confined to the last half of the clip."""
+    res = es.analyze(_wav(_synth_late("late_hiss")), RPM, CYL)
+    assert res["outcome"] == "vacuum_hiss"
+
+
 def test_broadband_hiss_fires():
     res = es.analyze(_wav(_synth("hiss")), RPM, CYL)
     assert res["outcome"] == "vacuum_hiss"

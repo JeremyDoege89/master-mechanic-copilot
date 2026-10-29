@@ -8,6 +8,7 @@ refuses new paid calls past BUDGET_USD_HARD_STOP.
 from __future__ import annotations
 
 import os
+import threading
 
 # Prices (USD). Source: AGENTS.md "Meta client rules" / SPEC section 4.
 SPARK_INPUT_PER_MTOK = 1.25
@@ -121,11 +122,17 @@ def actual_cost_from_usage(model: str, usage: dict, provider: str = "meta") -> f
 
 
 class BudgetTracker:
-    """In-memory spend guard. One per process (or per test)."""
+    """In-memory spend guard. One per process (or per test).
+
+    Thread-safe: concurrent analyzer threads (fallback + second opinion)
+    share one tracker, so ``check``/``add`` hold a lock — no torn
+    read-modify-write on ``spend_usd``.
+    """
 
     def __init__(self, hard_stop_usd: float = DEFAULT_HARD_STOP_USD, spend_usd: float = 0.0) -> None:
         self.hard_stop_usd = float(hard_stop_usd)
         self.spend_usd = float(spend_usd)
+        self._lock = threading.Lock()
 
     @classmethod
     def from_env(cls, spend_usd: float = 0.0) -> "BudgetTracker":
@@ -138,12 +145,57 @@ class BudgetTracker:
 
     def check(self, estimate_usd: float) -> None:
         """Refuse *before* spending if this call would pass the hard stop."""
-        if self.spend_usd + max(0.0, estimate_usd) > self.hard_stop_usd:
-            raise BudgetExceeded(
-                f"refusing call: spend ${self.spend_usd:.4f} + estimate ${estimate_usd:.4f} "
-                f"exceeds BUDGET_USD_HARD_STOP=${self.hard_stop_usd:.2f}"
-            )
+        with self._lock:
+            if self.spend_usd + max(0.0, estimate_usd) > self.hard_stop_usd:
+                raise BudgetExceeded(
+                    f"refusing call: spend ${self.spend_usd:.4f} + estimate ${estimate_usd:.4f} "
+                    f"exceeds BUDGET_USD_HARD_STOP=${self.hard_stop_usd:.2f}"
+                )
 
     def add(self, actual_usd: float) -> float:
-        self.spend_usd += max(0.0, actual_usd)
-        return self.spend_usd
+        with self._lock:
+            self.spend_usd += max(0.0, actual_usd)
+            return self.spend_usd
+
+
+# -- process-wide registry (findings #1, M6 GET /budget) -----------------------
+# One tracker per provider, shared by every client and bind(): Meta Model API
+# spend ($120) and Baseten Spark Open spend ($80) accumulate across requests
+# in this process, so the hard stops are reachable. Tests that need
+# isolation pass an explicit BudgetTracker (the client constructors honour
+# it); the registry is keyed read-only by provider name for M6's GET /budget.
+_TRACKERS: dict[str, BudgetTracker] = {}
+_TRACKERS_LOCK = threading.Lock()
+
+_META_BUDGET_ENV = "BUDGET_USD_HARD_STOP"
+_BASETEN_BUDGET_ENV = "BASETEN_BUDGET_USD_HARD_STOP"
+_DEFAULT_BASETEN_HARD_STOP_USD = 80.0
+
+
+def _tracker_hard_stop(name: str) -> float:
+    if name == "baseten":
+        raw = os.environ.get(_BASETEN_BUDGET_ENV, str(_DEFAULT_BASETEN_HARD_STOP_USD))
+        default = _DEFAULT_BASETEN_HARD_STOP_USD
+    else:
+        raw = os.environ.get(_META_BUDGET_ENV, str(DEFAULT_HARD_STOP_USD))
+        default = DEFAULT_HARD_STOP_USD
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+def get_tracker(name: str) -> BudgetTracker:
+    """Return the process-wide tracker for provider ``name``.
+
+    ``"meta"`` is the $120 Meta Model API ledger, ``"baseten"`` the $80
+    Spark Open ledger. Unknown names raise ``ValueError``.
+    """
+    if name not in ("meta", "baseten"):
+        raise ValueError(f"unknown budget tracker {name!r} (want 'meta' or 'baseten')")
+    with _TRACKERS_LOCK:
+        tracker = _TRACKERS.get(name)
+        if tracker is None:
+            tracker = BudgetTracker(hard_stop_usd=_tracker_hard_stop(name))
+            _TRACKERS[name] = tracker
+        return tracker

@@ -136,6 +136,51 @@ def test_contributor_model_refused(tmp_path):
         _client(tmp_path, transport, models={"spark": "muse-spark-9.9-contributor"})
 
 
+def test_non_meta_model_refused_per_key(tmp_path):
+    """Finding #14: only pinned Meta IDs are callable — MODEL_SPARK=gpt-4o
+    (even with a changed base URL) must raise like the Baseten client."""
+    from mmc.meta.client import MetaClientError
+
+    transport, _ = _resp("{}")
+    with pytest.raises(MetaClientError, match="[Nn]on-Meta|not.*Meta|refus"):
+        _client(tmp_path, transport, models={"spark": "gpt-4o"})
+    with pytest.raises(MetaClientError, match="[Nn]on-Meta|not.*Meta|refus"):
+        _client(tmp_path, transport, models={"sam": "gpt-4o"})
+    # Per-key pins: a Spark ID is not a valid SAM pin and vice versa.
+    with pytest.raises(MetaClientError, match="[Nn]on-Meta|not.*Meta|refus|pin"):
+        _client(tmp_path, transport, models={"spark": "sam-3.1"})
+    with pytest.raises(MetaClientError, match="[Nn]on-Meta|not.*Meta|refus|pin"):
+        _client(tmp_path, transport, models={"sam": "muse-spark-1.3"})
+
+
+def test_empty_usage_books_estimate_and_flags(tmp_path):
+    """Finding #3: usage={} must not make a paid call free in the ledger."""
+    from types import SimpleNamespace as _NS
+
+    def transport(model: str, kwargs: dict):
+        return _NS(output_text='{"a": 1}', usage={})
+
+    client = _client(tmp_path, transport)
+    result, record = client.call(
+        kind="llm_call", model_key="spark",
+        request={"op": "t", "input": "hi"}, estimate_usd=0.01,
+    )
+    assert result.cost_usd == pytest.approx(0.01)
+    assert client.budget.spend_usd == pytest.approx(0.01)
+    assert record["cost_usd"] == pytest.approx(0.01)
+    assert record.get("cost_estimated") is True
+
+
+def test_real_usage_does_not_set_estimated_flag(tmp_path):
+    transport, _ = _resp('{"a": 1}')
+    client = _client(tmp_path, transport)
+    _, record = client.call(
+        kind="llm_call", model_key="spark",
+        request={"op": "t", "input": "hi"}, estimate_usd=0.01,
+    )
+    assert not record.get("cost_estimated")
+
+
 def test_429_retries_then_succeeds(tmp_path):
     attempts = {"n": 0}
 

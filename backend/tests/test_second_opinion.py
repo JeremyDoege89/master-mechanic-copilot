@@ -170,6 +170,51 @@ def test_analyzer_open_timeout_returns_labels_on_time(tmp_path, monkeypatch):
     ]
 
 
+def test_fallback_primary_skips_second_opinion(tmp_path):
+    """Finding #5: when the primary is served by the Spark Open fallback
+    (record provider baseten), the second opinion must not run a second
+    Baseten call that merely corroborates the fallback with itself."""
+    from mmc.api import routes_vision as rv
+    from mmc.meta.spark_open import SparkOpenClient as SOC
+
+    def meta_boom(model, kwargs):
+        raise RuntimeError("meta 500")
+
+    meta = MetaClient(
+        api_key="k",
+        models={"spark": "muse-spark-1.3", "sam": "sam-3.1"},
+        budget=BudgetTracker(hard_stop_usd=120.0),
+        cache_dir=tmp_path / "meta",
+        replay_cached=False,
+        transport=meta_boom,
+        sleep=lambda s: None,
+    )
+    open_calls = {"n": 0}
+
+    def open_transport(model, kwargs):
+        open_calls["n"] += 1
+        msg = SimpleNamespace(content=json.dumps(SECOND_AGREE), reasoning_content="r")
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=msg)],
+            usage={"prompt_tokens": 10, "completion_tokens": 5},
+        )
+
+    open_client = SOC(
+        api_key="baseten-test",
+        cache_dir=tmp_path / "baseten",
+        replay_cached=False,
+        transport=open_transport,
+        sleep=lambda s: None,
+    )
+    analyzer = rv.LiveVisionAnalyzer(meta, open_client)
+    merged, _overlays, info = analyzer.analyze_keyframe_full(b"img")
+    assert info["primary_record"].get("provider") == "baseten"
+    assert open_calls["n"] == 1  # fallback only; no second Baseten call
+    assert info["open_record"] is None
+    assert info["second_opinion_pending"] is False
+    assert all(c["agreement"] == "single_source" for c in merged["components"])
+
+
 def test_analyzer_open_error_degrades_to_single_source(tmp_path):
     from mmc.api import routes_vision as rv
 
@@ -231,10 +276,18 @@ def test_keyframe_route_surfaces_agreement(tmp_path, monkeypatch):
         assert body["disagreements"] == [{"name": "Air filter box", "named_by": "spark"}]
         assert body["second_opinion_pending"] is False
         assert body["evidence_id"]
-        # Both opinions logged as llm_call events; posteriors unmoved.
+        # Both opinions logged as llm_call events in the session log
+        # itself (finding #15: derived state alone cannot show this);
+        # posteriors unmoved.
+        import json as _json
+
+        log_path = tmp_path / "sessions" / sid / "events.jsonl"
+        types = [
+            _json.loads(line)["type"] for line in log_path.read_text().splitlines() if line.strip()
+        ]
+        assert types.count("llm_call") == 2
         state = client.get(f"/sessions/{sid}/state").json()
         assert state["vision_second_opinions"] == []
-        log = [e["type"] for e in client.get(f"/sessions/{sid}/state").json().get("tests_log", [])]
-        assert log == []
+        assert state["tests_log"] == []
     finally:
         vision_routes.set_analyzer(vision_routes.LiveVisionAnalyzer())

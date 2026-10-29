@@ -27,6 +27,8 @@ import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleOwner
+import android.graphics.Bitmap
+import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -139,8 +141,11 @@ private fun handleFrame(
     onKeyframe: (ByteArray, Int, Int) -> Unit,
     tapped: Boolean,
 ) {
-    val yPlane = image.planes[0].buffer.toByteArray()
-    val small = downsampleGray(yPlane, image.width, image.height, SELECTOR_LONG_SIDE)
+    // Finding #10: YUV_420_888 planes pad rows (rowStride > width);
+    // copying the buffer verbatim shears every row below the first.
+    val yPlane = image.planes[0]
+    val yBytes = copyYPlane(yPlane.buffer, image.width, image.height, yPlane.rowStride, yPlane.pixelStride)
+    val small = downsampleGray(yBytes, image.width, image.height, SELECTOR_LONG_SIDE)
     if (camera != null) {
         try {
             camera.cameraControl.enableTorch(selector.isLowLight(small.pixels))
@@ -149,10 +154,35 @@ private fun handleFrame(
         }
     }
     if (selector.offer(small.pixels, small.width, small.height, System.currentTimeMillis(), tapped)) {
-        val key = downsampleGray(yPlane, image.width, image.height, KEYFRAME_LONG_SIDE)
+        val key = downsampleGray(yBytes, image.width, image.height, KEYFRAME_LONG_SIDE)
         onKeyframe(key.pixels.toJpegBytes(key.width, key.height), key.width, key.height)
         onStatus("")
     }
+}
+
+/**
+ * Pack the Y plane into a dense [width]×[height] array, honouring the
+ * plane's row stride (row padding) and pixel stride (finding #10).
+ * Absolute indexing: the buffer's position never matters.
+ */
+internal fun copyYPlane(
+    buffer: ByteBuffer,
+    width: Int,
+    height: Int,
+    rowStride: Int,
+    pixelStride: Int = 1,
+): ByteArray {
+    require(width > 0 && height > 0) { "bad frame size ${width}x${height}" }
+    require(rowStride >= width && pixelStride >= 1) { "bad strides row=$rowStride px=$pixelStride" }
+    val dup = buffer.duplicate()
+    val out = ByteArray(width * height)
+    for (r in 0 until height) {
+        val rowBase = r * rowStride
+        for (c in 0 until width) {
+            out[r * width + c] = dup.get(rowBase + c * pixelStride)
+        }
+    }
+    return out
 }
 
 internal data class Gray(val pixels: IntArray, val width: Int, val height: Int)
@@ -174,18 +204,22 @@ internal fun downsampleGray(y: ByteArray, width: Int, height: Int, longSide: Int
     return Gray(out, w, h)
 }
 
-private fun ByteBuffer.toByteArray(): ByteArray {
-    val bytes = ByteArray(remaining())
-    get(bytes)
-    return bytes
-}
-
 /**
- * Grayscale encodings for the keyframe bytes. Production replaces this with
- * Bitmap.compress(JPEG); the PGM fallback keeps JVM tests hermetic.
+ * Encode the grayscale keyframe as a real JPEG (finding #10): the backend's
+ * Spark/SAM calls need decodable JPEG bytes, not the PGM this emitted
+ * before. Device-only (android.graphics is a stub under JVM unit tests);
+ * stride handling above stays pure JDK and is covered by YuvStrideTest.
  */
-internal fun IntArray.toJpegBytes(width: Int, height: Int): ByteArray {
-    val header = "P5\n$width $height\n255\n".toByteArray()
-    val body = ByteArray(size) { this[it].coerceIn(0, 255).toByte() }
-    return header + body
+internal fun IntArray.toJpegBytes(width: Int, height: Int, quality: Int = 95): ByteArray {
+    require(size == width * height) { "pixels ${size} != ${width}x${height}" }
+    val argb = IntArray(size) { i ->
+        val g = this[i].coerceIn(0, 255)
+        -0x1000000 or (g shl 16) or (g shl 8) or g
+    }
+    val bmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+    bmp.setPixels(argb, 0, width, 0, 0, width, height)
+    val out = ByteArrayOutputStream(width * height)
+    require(bmp.compress(Bitmap.CompressFormat.JPEG, quality, out)) { "JPEG encode failed" }
+    bmp.recycle()
+    return out.toByteArray()
 }

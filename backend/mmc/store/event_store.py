@@ -17,6 +17,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -82,7 +83,13 @@ def utc_now_iso() -> str:
 
 
 class EventStore:
-    """JSONL event log with a hash chain and a SQLite index."""
+    """JSONL event log with a hash chain and a SQLite index.
+
+    Thread-safe (finding #12): M5 appends from analyzer worker threads, so
+    the seq/head read-modify-write plus the file + index writes hold one
+    lock. The index connection allows cross-thread use because every access
+    is behind that lock.
+    """
 
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
@@ -90,7 +97,8 @@ class EventStore:
         if not self.path.exists():
             self.path.touch()
         self.index_path = self.path.with_suffix(self.path.suffix + ".index.sqlite")
-        self._db = sqlite3.connect(self.index_path)
+        self._lock = threading.Lock()
+        self._db = sqlite3.connect(self.index_path, check_same_thread=False)
         # The index is a rebuildable cache (JSONL is the source of truth),
         # so it takes no durability cost: no fsync, no journal file.
         self._db.execute("PRAGMA journal_mode=MEMORY")
@@ -116,9 +124,10 @@ class EventStore:
         self._db.commit()
 
     def _read_all(self) -> list[dict]:
-        if getattr(self, "_f", None) is not None:
-            self._f.flush()
-        text = self.path.read_text(encoding="utf-8")
+        with self._lock:
+            if getattr(self, "_f", None) is not None:
+                self._f.flush()
+            text = self.path.read_text(encoding="utf-8")
         if not text.strip():
             return []
         return [json.loads(line) for line in text.splitlines()]
@@ -134,29 +143,30 @@ class EventStore:
             raise ValueError(f"unknown event type: {type!r}")
         if not isinstance(payload, dict):
             raise ValueError("payload must be a JSON object")
-        seq = self._next_seq
-        ts = ts or utc_now_iso()
-        ph = payload_hash(payload)
-        prev = self._head
-        event = {
-            "seq": seq,
-            "ts": ts,
-            "type": type,
-            "payload": payload,
-            "payload_sha256": ph,
-            "prev_hash": prev,
-            "hash": event_hash(seq, ts, type, ph, prev),
-        }
-        self._f.write(canonical_bytes(event).decode("ascii") + "\n")
-        self._f.flush()
-        self._db.execute(
-            "INSERT INTO events (seq, type, ts, hash) VALUES (?, ?, ?, ?)",
-            (seq, type, ts, event["hash"]),
-        )
-        self._db.commit()
-        self._next_seq = seq + 1
-        self._head = event["hash"]
-        return event
+        with self._lock:
+            seq = self._next_seq
+            ts = ts or utc_now_iso()
+            ph = payload_hash(payload)
+            prev = self._head
+            event = {
+                "seq": seq,
+                "ts": ts,
+                "type": type,
+                "payload": payload,
+                "payload_sha256": ph,
+                "prev_hash": prev,
+                "hash": event_hash(seq, ts, type, ph, prev),
+            }
+            self._f.write(canonical_bytes(event).decode("ascii") + "\n")
+            self._f.flush()
+            self._db.execute(
+                "INSERT INTO events (seq, type, ts, hash) VALUES (?, ?, ?, ?)",
+                (seq, type, ts, event["hash"]),
+            )
+            self._db.commit()
+            self._next_seq = seq + 1
+            self._head = event["hash"]
+            return event
 
     def verify_chain(self) -> bool:
         """True iff every line parses and the whole chain is intact.

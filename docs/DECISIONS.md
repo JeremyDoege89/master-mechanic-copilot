@@ -2,6 +2,76 @@
 
 Newest first. Each entry: date, decision, why. Add one whenever scope, a dependency or an architecture choice changes.
 
+## 2026-10-29 — M5 review findings 1–15 fixed (blocking 1–4 first)
+
+Each finding got a failing test, then the fix, then green. Backend suite
+342 passed + 1 skipped in ~135 s (under the 3-minute cap);
+`scripts/replay_check.sh` OK on `sim-healthy.mmrec`; Android
+`testDebugUnitTest assembleDebug` green offline (84 unit tests, fresh APK).
+
+- #1/#12 (budget): `budget.get_tracker(name)` is the process-wide registry
+  M6's `GET /budget` will read — `"meta"` ($120 `BUDGET_USD_HARD_STOP`)
+  and `"baseten"` ($80 `BASETEN_BUDGET_USD_HARD_STOP`), shared by every
+  default `MetaClient`/`SparkOpenClient` and every `bind()`. `check`/`add`
+  hold a lock; `EventStore.append` (plus reads) holds one lock around the
+  seq/head read-modify-write with `check_same_thread=False` (threaded
+  appends previously died in sqlite). Tests needing isolation inject an
+  explicit `BudgetTracker` (`test_budget_refusal_past_hard_stop` updated).
+- #2/#9 (cache keys): `call`/`call_stream` take `cache_key` — the filename
+  hashes ORIGINAL input bytes only (`spark._image_part` now carries full
+  `sha256`; SAM image/video requests carry `orig_sha256`/`orig_bytes` via
+  `image_cache_key`/`video_cache_key`, box prompts re-based to orig-space
+  for the key). Sent-bytes hash/scale stay in the request as record
+  metadata. Committed `scripts/rekey_llm_cache.py` migrates old entries
+  without re-recording (Spark stubs match `--original` by prefix+length,
+  SAM by sent==orig sha, video by explicit `--map`); the two live entries
+  under `backend/data/llm_cache` re-keyed against `engine_bay_02.jpg`.
+- #3: `actual <= 0` with a positive estimate books the estimate and sets
+  `cost_estimated: true` on Meta, stream, and Baseten paths.
+- #4: `parse_csv` is row-wise — a bad cell drops its row
+  (`dropped_rows`), an empty cell null-marks, ISO timestamps never drop
+  rows; `derive_tests(parsed, vehicle)` takes `disp_l` from
+  `vehicle.engine` (`csv_logs.displacement_l`) and skips MAF with a reason
+  when unknown — no 2.0 L assumption. Route passes the session vehicle.
+- #5: `analyze_keyframe_full` runs the primary first and starts the second
+  opinion only when the primary is Meta-served; a `provider: baseten`
+  primary returns `single_source` with one total Baseten call.
+- #6/#7/#8: all vision routes (keyframe, instrument, confirm,
+  engine-sound) reject replay sessions (409) and map
+  `BudgetExceeded`/`NoCachedResponse` to 402; SAM overlay budget refusals
+  re-raise (other overlay failures log and continue); the instrument route
+  binds the analyzer so Meta `llm_call` records reach the audit log;
+  blocking analyzer/DSP/video work runs via `asyncio.to_thread`.
+- #10 (Android): `copyYPlane` respects row/pixel strides (pure JDK,
+  covered by new `YuvStrideTest`: packed, padded, pixel-stride-2,
+  consumed-buffer cases); `toJpegBytes` encodes a real JPEG via
+  `Bitmap.compress` (device-only). Sandbox build notes: `/tmp/gh`'s
+  Gradle-8.10.2 metadata store lacks camera 1.4.2 descriptors, so
+  verification drove the extracted Gradle 8.7 binary directly
+  (`GRADLE_USER_HOME=/tmp/gh`, `ANDROID_USER_HOME=/tmp/android-home`,
+  `--offline`); `/tmp/gh`'s `metadata-2.10x` root indexes were synced from
+  `~/.gradle` (descriptor/file copies alone are invisible without them).
+  Committed wrapper/build files unchanged.
+- #11: `detect_tone` hunts peaks in every 1 s chunk (refines the winner,
+  persistence unchanged); `hiss_metrics` scores the strongest window.
+  New non-stationary synths (squeal/hiss starting at 2.5 s) failed before.
+- #12 (masks): `submit_mask_jobs` collects per-frame results (failures log
+  + yield an `error` entry); the inline `analyze_clip` path skips bad
+  frames the same way.
+- #13 (SPEC §5 manual > kp > physics): `evaluate` injects a manual
+  min/max into the measured payload for range-judged tests
+  (`_MANUAL_RANGE_KEYS`: fuel pressure — already `spec_min/max_kpa` — and
+  voltage, new `spec_min/max_v`); a manual range now flips outcomes
+  (350 kPa normal→low against 380–420; 12.0 V rest low→normal against
+  11.5–12.6). Priority is manual > caller-supplied spec > hardcoded.
+- #14: `MetaClient` enforces per-key Meta ID prefixes
+  (`MODEL_KEY_PREFIXES`: `muse-spark-`/`muse-wonder-`/`sam-`/`muse-voice-`)
+  at construction and per call — `MODEL_SPARK=gpt-4o` raises.
+- #15: "no evidence before confirm" and "both opinions logged" now assert
+  on `events.jsonl` (`evidence_added` absent/`llm_call` × 2).
+- Suite speed: `FixtureAnalyzer` parses the battery SAM stream once per
+  process (`test_vision_routes.py` 44 s → 4.5 s).
+
 ## 2026-10-29 — SAM mask-decode performance fix (decode-once + 640 px + pool)
 
 - Profiling (cProfile + wall probes, live fixture

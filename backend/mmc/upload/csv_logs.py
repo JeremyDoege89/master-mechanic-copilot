@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import csv
 import io
+import re
 import statistics
 import uuid
 from dataclasses import dataclass, field
@@ -148,6 +149,7 @@ class ParsedLog:
     series: dict[str, list[float]] = field(default_factory=dict)
     ignored_columns: list[str] = field(default_factory=list)
     n_rows: int = 0
+    dropped_rows: int = 0
 
 
 def parse_csv(data: bytes) -> ParsedLog:
@@ -222,28 +224,78 @@ def parse_csv(data: bytes) -> ParsedLog:
         if target is None:
             if cell.strip():
                 ignored.append(cell.strip())
+    # Finding #4: parse ROW-wise. A bad cell used to be skipped per column,
+    # silently shifting that column against the others (idle RPM paired
+    # with a cruise trim, then folded into a durable posterior). Now a
+    # non-empty unparseable cell drops its whole row; an empty cell only
+    # null-marks that series for the row, keeping every column aligned.
+    dropped = 0
+    n_rows = 0
+    for row in rows[header_idx + 1 :]:
+        if not any(cell.strip() for cell in row):
             continue
-        canon, family = target
-        values = []
-        for row in rows[header_idx + 1 :]:
-            if j >= len(row):
+        cells: dict[str, float] = {}
+        bad = False
+        for j, target in mapping.items():
+            if target is None:
                 continue
-            number = _to_float(row[j])
+            canon, family = target
+            raw = row[j] if j < len(row) else ""
+            if not raw.strip():
+                continue  # null-mark: missing cell, row stays aligned
+            number = _to_float(raw)
             if number is None:
-                continue
-            values.append(_convert(number, family))
-        if values:
-            series[canon] = values
+                if canon == "time_s":
+                    # Timestamps arrive as ISO/GPS strings ("2026-10-28
+                    # 10:00:00") as well as epoch seconds: an unparseable
+                    # time cell null-marks the time series, never the row.
+                    continue
+                bad = True
+                break
+            cells[canon] = _convert(number, family)
+        if bad:
+            dropped += 1
+            continue
+        n_rows += 1
+        for canon, value in cells.items():
+            series.setdefault(canon, []).append(value)
     return ParsedLog(
         exporter=exporter,
-        series=series,
+        series={k: v for k, v in series.items() if v},
         ignored_columns=sorted(set(ignored)),
-        n_rows=max((len(v) for v in series.values()), default=0),
+        n_rows=n_rows,
+        dropped_rows=dropped,
     )
 
 
 def series_median(values: list[float]) -> float:
     return float(statistics.median(values))
+
+
+_DISP_RE = re.compile(r"(\d+(?:\.\d+)?)\s*l", re.IGNORECASE)
+
+
+def displacement_l(vehicle: dict | None) -> float | None:
+    """Engine displacement in litres from the session vehicle.
+
+    Parses ``vehicle["engine"]`` (e.g. ``"2.0L I4"``). Returns None when
+    the descriptor is missing or unparseable — callers skip the MAF
+    plausibility derivation with a reason instead of assuming 2.0 L
+    (finding #4). The count is never guessed.
+    """
+    engine = ""
+    if isinstance(vehicle, dict):
+        engine = str(vehicle.get("engine") or "")
+    if not engine:
+        return None
+    match = _DISP_RE.search(engine)
+    if not match:
+        return None
+    try:
+        value = float(match.group(1))
+    except ValueError:
+        return None
+    return value if value > 0 else None
 
 
 def _bucket(series: dict[str, list[float]], lo: float, hi: float) -> list[int]:
@@ -266,11 +318,15 @@ def _bank_total(series: dict[str, list[float]], idx: list[int], bank: str) -> li
     return totals
 
 
-def derive_tests(parsed: ParsedLog) -> tuple[list[dict], list[dict]]:
+def derive_tests(
+    parsed: ParsedLog, vehicle: dict | None = None
+) -> tuple[list[dict], list[dict]]:
     """Map parsed series to KP test measured payloads.
 
     Returns ``(derived, skipped)``; each test_ref appears at most once in
     ``derived``. ``skipped`` entries carry ``test_ref`` + ``reason``.
+    ``vehicle`` is the session vehicle: MAF plausibility needs its engine
+    displacement and is skipped (with a reason) when unknown.
     """
     series = parsed.series
     derived: list[dict] = []
@@ -305,18 +361,26 @@ def derive_tests(parsed: ParsedLog) -> tuple[list[dict], list[dict]]:
     else:
         skip("ect_warmup_curve", "no ECT column")
 
-    # MAF plausibility: mean MAF at median RPM.
+    # MAF plausibility: mean MAF at median RPM, judged against the
+    # session vehicle's displacement — never a hardcoded 2.0 L.
     if series.get("maf_gs") and series.get("rpm"):
-        derived.append(
-            {
-                "test_ref": "maf_pid_plausibility",
-                "measured": {
-                    "maf_gs": sum(series["maf_gs"]) / len(series["maf_gs"]),
-                    "rpm": series_median(series["rpm"]),
-                    "disp_l": 2.0,
-                },
-            }
-        )
+        disp = displacement_l(vehicle)
+        if disp is None:
+            skip(
+                "maf_pid_plausibility",
+                "unknown engine displacement (set vehicle.engine like '2.0L I4')",
+            )
+        else:
+            derived.append(
+                {
+                    "test_ref": "maf_pid_plausibility",
+                    "measured": {
+                        "maf_gs": sum(series["maf_gs"]) / len(series["maf_gs"]),
+                        "rpm": series_median(series["rpm"]),
+                        "disp_l": disp,
+                    },
+                }
+            )
     else:
         skip("maf_pid_plausibility", "need MAF and RPM columns")
 

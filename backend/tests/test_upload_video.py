@@ -198,6 +198,28 @@ def test_analyze_clip_defer_returns_boxes_with_pending_masks():
     assert all(j["clip_index"] in (0, 1) for j in out["_mask_jobs"])
 
 
+def test_mask_batch_collects_per_frame_results():
+    """Finding #12: one failing mask job must not discard the whole batch
+    with no log — per-frame results are collected, failures logged."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from mmc.meta import sam as sam_mod
+
+    events = sam_mod.load_stream_fixture(FIXTURES / "sam_video_upload_trimmed.jsonl")
+    jobs = sam_mod.build_mask_jobs(events, "engine", stride=1)[:2]
+    assert len(jobs) == 2
+    jobs[1] = dict(jobs[1], frame_events=None)  # unparseable: worker raises
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        future = sam_mod.submit_mask_jobs(jobs, pool)
+        results = future.result(timeout=120)
+    assert len(results) == 2
+    good = next(r for r in results if r["frame_index"] == jobs[0]["frame_index"])
+    assert good["masks"]
+    bad = next(r for r in results if r["frame_index"] == jobs[1]["frame_index"])
+    assert bad["masks"] == []
+    assert bad.get("error")
+
+
 def test_merge_frame_results_folds_masks_into_overlays():
     overlays = [
         {"label": "a", "found": False, "boxes": [], "masks": []},

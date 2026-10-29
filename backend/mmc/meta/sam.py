@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import logging
 import os
 import re
 import shutil
@@ -58,6 +59,8 @@ import struct
 import subprocess
 import tempfile
 import threading
+
+logger = logging.getLogger(__name__)
 from concurrent.futures import Future, ProcessPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -159,6 +162,65 @@ def _check_image_bytes(image_bytes: bytes) -> bytes:
     if not image_bytes:
         raise ValueError("SAM needs non-empty image bytes")
     return image_bytes
+
+
+def _sha256_hex(data: bytes) -> str:
+    import hashlib
+
+    return hashlib.sha256(data).hexdigest()
+
+
+def image_cache_key(
+    concept: str,
+    prompt: str,
+    image_bytes: bytes,
+    mime: str = "image/jpeg",
+) -> dict:
+    """Stable cache-key fields for one image call (findings #2/#9).
+
+    Keyed on the ORIGINAL input bytes only: the downscaled bytes SAM
+    actually receives vary by machine (ffmpeg present or not), so the
+    sent-bytes hash and scale stay in the request record as metadata and
+    out of the key. ``prompt`` must be the orig-space prompt (for
+    box/point calls, built from the unscaled box).
+    """
+    return {
+        "op": "sam.segment_image.v1",
+        "concept": concept,
+        "prompt": prompt,
+        "mime": mime,
+        "orig_sha256": _sha256_hex(image_bytes),
+        "orig_bytes": len(image_bytes),
+    }
+
+
+def video_cache_key(
+    container: str,
+    concepts: list[str],
+    prompt: str,
+    video_bytes: bytes,
+    frames: int,
+    video_source: str,
+    video_file_id: str | None = None,
+) -> dict:
+    """Stable cache-key fields for one video call (findings #2/#9).
+
+    Same contract as :func:`image_cache_key`: ORIGINAL clip bytes only;
+    the sent-bytes hash, sent size and scale ride in the request record.
+    """
+    key: dict[str, object] = {
+        "op": "sam.track_video.v1",
+        "container": container,
+        "concepts": list(concepts),
+        "prompt": prompt,
+        "orig_sha256": _sha256_hex(video_bytes),
+        "orig_bytes": len(video_bytes),
+        "frames": max(int(frames), VIDEO_MIN_FRAMES),
+        "video_source": video_source,
+    }
+    if video_source == "file_id" and video_file_id:
+        key["video_file_id"] = video_file_id
+    return key
 
 
 def load_stream_fixture(path: Any) -> list[dict]:
@@ -516,16 +578,37 @@ def mask_pool() -> ProcessPoolExecutor:
 
 
 def submit_mask_jobs(jobs: list[dict], executor: Any = None) -> Future:
-    """Convert mask jobs in parallel; one Future for all overlay results."""
+    """Convert mask jobs in parallel; one Future for all overlay results.
+
+    Finding #12: per-frame results are collected — one failing frame is
+    logged and yields an ``error`` entry instead of discarding the whole
+    batch with no log.
+    """
     pool = executor or mask_pool()
     futures = [pool.submit(convert_frame_job, job) for job in jobs]
     done: Future = Future()
 
     def _watch() -> None:
-        try:
-            done.set_result([future.result() for future in futures])
-        except Exception as exc:  # noqa: BLE001 - delivered to the callback
-            done.set_exception(exc)
+        results: list[dict] = []
+        for job, future in zip(jobs, futures):
+            try:
+                results.append(future.result())
+            except Exception as exc:  # noqa: BLE001 - collected per frame
+                logger.warning(
+                    "mask conversion failed for frame %s: %s",
+                    job.get("frame_index"),
+                    exc,
+                )
+                results.append(
+                    {
+                        "frame_index": job.get("frame_index"),
+                        "clip_index": job.get("clip_index", 0),
+                        "boxes": [],
+                        "masks": [],
+                        "error": f"{type(exc).__name__}: {exc}"[:300],
+                    }
+                )
+        done.set_result(results)
 
     threading.Thread(target=_watch, daemon=True).start()
     return done
@@ -795,6 +878,8 @@ def segment_image(
     """
     concept = _check_concept(concept)
     image_bytes = _check_image_bytes(image_bytes)
+    key_mime = mime  # the caller's mime: stable across machines (the wire
+    # mime flips to JPEG only when the local ffmpeg transcodes)
     sent, scale, orig_size, sent_size = downscale_image(image_bytes)
     if sent is not image_bytes:
         mime = "image/jpeg"  # ffmpeg transcodes to JPEG
@@ -809,13 +894,25 @@ def segment_image(
         "op": "sam.segment_image.v1",
         "concept": concept,
         "prompt": prompt,
-        "image_sha256": __import__("hashlib").sha256(sent).hexdigest(),
+        "image_sha256": _sha256_hex(sent),
         "image_bytes": len(sent),
+        "orig_sha256": _sha256_hex(image_bytes),
         "orig_bytes": len(image_bytes),
         "sam_scale": scale,
         "orig_size": list(orig_size) if orig_size else None,
         "sent_size": list(sent_size) if sent_size else None,
     }
+    # Finding #9: the cache key uses the ORIGINAL bytes (plus the
+    # orig-space prompt for box/point calls, which the API receives
+    # scaled into sent space). The sent-bytes hash/scale stay in the
+    # request as record metadata only.
+    if (box is not None or point is not None) and orig_size:
+        try:
+            key_prompt = object_prompt_text(tuple(orig_size), box, point)
+        except ValueError:
+            key_prompt = prompt
+    else:
+        key_prompt = concept if box is None and point is None else prompt
     events, _text, _usage, record = client.call_stream(
         kind="sam_call",
         model_key="sam",
@@ -825,6 +922,7 @@ def segment_image(
             "input": _image_input(prompt, sent, mime),
             "stream": True,
         },
+        cache_key=image_cache_key(concept, key_prompt, image_bytes, key_mime),
     )
     seg = parse_image_events(events)
     back = 1.0 / scale if scale != 1.0 else 1.0
@@ -882,9 +980,10 @@ def _prepare_video_call(
 ) -> tuple[list[dict], str, bytes, str, dict, float]:
     """Shared downscale + prompt + request + input for both video callers.
 
-    Returns ``(live_input, prompt_text, sent, container, request, scale)``.
-    Box prompts are scaled into the SENT (possibly downscaled) media space;
-    results scale back by ``1/scale``.
+    Returns ``(live_input, prompt_text, sent, container, request, scale,
+    cache_key)``. Box prompts are scaled into the SENT (possibly
+    downscaled) media space; results scale back by ``1/scale``.
+    ``cache_key`` is the stable original-bytes key (findings #2/#9).
     """
     if video_source not in ("inline", "file_id"):
         raise ValueError(f"video_source must be 'inline' or 'file_id', not {video_source!r}")
@@ -930,6 +1029,8 @@ def _prepare_video_call(
         "op": "sam.track_video.v1",
         "container": container,
         "video_bytes": len(sent),
+        "sent_sha256": _sha256_hex(sent),
+        "orig_sha256": _sha256_hex(video_bytes),
         "orig_bytes": len(video_bytes),
         "video_source": video_source,
         "concepts": concepts,
@@ -945,7 +1046,39 @@ def _prepare_video_call(
         live_input = _video_file_id_input(prompt_text, video_file_id)
     else:
         live_input = _video_input(prompt_text, sent, filename, container)
-    return live_input, prompt_text, sent, container, request, scale
+    # Finding #9: key on the ORIGINAL clip bytes. Box prompts ride
+    # scaled into sent space on the wire; the key uses the orig-space
+    # prompt so ffmpeg/no-ffmpeg machines share one cache entry.
+    if boxes and size is not None:
+        try:
+            key_objects = []
+            for i, b in enumerate(boxes):
+                coords = {k: int(b[k]) for k in ("x_min", "y_min", "x_max", "y_max")}
+                key_objects.append(
+                    PromptObject(
+                        id=i,
+                        prompts=[
+                            FramePrompt(
+                                frame=0,
+                                box=PromptBox(
+                                    left=coords["x_min"],
+                                    top=coords["y_min"],
+                                    right=coords["x_max"] + 1,
+                                    bottom=coords["y_max"] + 1,
+                                ),
+                            )
+                        ],
+                    )
+                )
+            key_prompt = build_object_prompt(size=tuple(size), objects=key_objects)
+        except (KeyError, TypeError, ValueError):
+            key_prompt = prompt_text
+    else:
+        key_prompt = prompt_text
+    cache_key = video_cache_key(
+        container, concepts, key_prompt, video_bytes, frames, video_source, video_file_id
+    )
+    return live_input, prompt_text, sent, container, request, scale, cache_key
 
 
 def track_video(
@@ -981,7 +1114,7 @@ def track_video(
     The clip is downscaled to :data:`SAM_MAX_SIDE` before the call and
     result coordinates are scaled back; the scale rides in the record.
     """
-    live_input, _prompt, _sent, _container, request, scale = _prepare_video_call(
+    live_input, _prompt, _sent, _container, request, scale, cache_key = _prepare_video_call(
         video_bytes, filename, boxes, concepts, frames, size, video_source, video_file_id
     )
     concepts = request["concepts"]
@@ -991,6 +1124,7 @@ def track_video(
         request=request,
         estimate_usd=estimate_sam_video(frames),
         response_kwargs={"input": live_input, "stream": True},
+        cache_key=cache_key,
     )
     concept = concepts[0] if concepts else "tracked object"
     back = 1.0 / scale if scale != 1.0 else 1.0
@@ -1016,7 +1150,7 @@ def track_video_raw(
     :func:`build_mask_jobs`. Same prompts, sizes, and call record as
     :func:`track_video` — only the parse/convert step is deferred.
     """
-    live_input, _prompt, _sent, _container, request, _scale = _prepare_video_call(
+    live_input, _prompt, _sent, _container, request, _scale, cache_key = _prepare_video_call(
         video_bytes, filename, boxes, concepts, frames, size, video_source, video_file_id
     )
     events, _text, _usage, record = client.call_stream(
@@ -1025,5 +1159,6 @@ def track_video_raw(
         request=request,
         estimate_usd=estimate_sam_video(frames),
         response_kwargs={"input": live_input, "stream": True},
+        cache_key=cache_key,
     )
     return events, record

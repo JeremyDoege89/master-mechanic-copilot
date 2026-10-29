@@ -16,10 +16,13 @@ offline on recorded fixtures: ``set_analyzer(FixtureAnalyzer(...))``.
 from __future__ import annotations
 
 import asyncio
+import logging
 import threading
 import time
 import uuid
 from typing import Any, Callable, Protocol
+
+logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -27,7 +30,8 @@ from pydantic import BaseModel
 from mmc import sessions as sess
 from mmc.meta import sam as sam_mod
 from mmc.meta import spark as spark_mod
-from mmc.meta.client import MetaClient, MetaClientError
+from mmc.meta.budget import BudgetExceeded
+from mmc.meta.client import MetaClient, MetaClientError, NoCachedResponse
 from mmc.store import blobs as blob_store
 from mmc.vision import components as comp_mod
 from mmc.vision import instruments as instr_mod
@@ -61,7 +65,10 @@ def _overlays_for(parsed: dict, image: bytes, client: MetaClient) -> list[dict]:
             result, _recs, used = sam_mod.segment_with_fallback(
                 comp["sam_concept"], comp.get("sam_fallback"), image, client
             )
-        except Exception:
+        except (BudgetExceeded, NoCachedResponse):
+            raise  # budget/replay refusals surface (402), never swallowed
+        except Exception as exc:  # noqa: BLE001 - logged, never blocking
+            logger.warning("SAM overlay for %r failed: %s", comp.get("sam_concept"), exc)
             continue  # a failed overlay never blocks the components answer
         overlays.append(
             {
@@ -203,14 +210,12 @@ class LiveVisionAnalyzer:
         t0 = time.time()
         tp = threading.Thread(target=run_primary, daemon=True)
         tp.start()
-        to: threading.Thread | None = None
-        if open_client is not None:
-            to = threading.Thread(target=run_open, daemon=True)
-            to.start()
         tp.join(timeout=PRIMARY_TIMEOUT_S)
         primary_latency = time.time() - t0
         if "parsed" not in primary_box:
             err = primary_box.get("error")
+            if isinstance(err, (BudgetExceeded, NoCachedResponse)):
+                raise err
             raise MetaClientError(f"primary vision failed: {err}") from (
                 err if isinstance(err, Exception) else None
             )
@@ -226,6 +231,16 @@ class LiveVisionAnalyzer:
             "primary_record": primary_record,
             "open_record": None,
         }
+        # Finding #5: when the primary was already served by the Spark Open
+        # fallback (record provider baseten), a second opinion on the same
+        # client would merely corroborate the fallback with itself at double
+        # Baseten cost — skip it and label every entry single_source. The
+        # open thread therefore starts only after the primary is known to
+        # be Meta-served.
+        to: threading.Thread | None = None
+        if open_client is not None and primary_record.get("provider") != "baseten":
+            to = threading.Thread(target=run_open, daemon=True)
+            to.start()
         if to is None:
             merged = comp_mod._single_source(primary)
             info["disagreements"] = [
@@ -350,6 +365,13 @@ def _require_session(session_id: str) -> sess.Session:
     return session
 
 
+def _require_writable(session: sess.Session) -> None:
+    """Replay sessions stay read-only (finding #6): same guard as the
+    upload processing routes — no spend, no log mutation on replays."""
+    if session.meta.get("mode") == "replay":
+        raise HTTPException(status_code=409, detail="replay sessions are read-only")
+
+
 def _load_blob(blob_ref: str) -> tuple[bytes, str]:
     try:
         data = blob_store.get(blob_ref)
@@ -365,6 +387,7 @@ async def vision_keyframe(session_id: str, body: KeyframeBody):
     from mmc.api.routes import _broadcast as _push_state
 
     session = _require_session(session_id)
+    _require_writable(session)
     image, content_hash = _load_blob(body.blob_ref)
     registry = sess.get_registry()
     evidence_id = uuid.uuid4().hex
@@ -372,7 +395,10 @@ async def vision_keyframe(session_id: str, body: KeyframeBody):
     full = getattr(analyzer, "analyze_keyframe_full", None)
     if full is None:
         try:
-            parsed, overlays = analyzer.analyze_keyframe(image)
+            # Finding #8: blocking analysis leaves the event loop.
+            parsed, overlays = await asyncio.to_thread(analyzer.analyze_keyframe, image)
+        except (BudgetExceeded, NoCachedResponse) as e:
+            raise HTTPException(status_code=402, detail=str(e))
         except (ValueError, MetaClientError) as e:
             raise HTTPException(status_code=502, detail=f"vision backend: {e}")
         info: dict = {"disagreements": [], "second_opinion_pending": False,
@@ -407,9 +433,15 @@ async def vision_keyframe(session_id: str, body: KeyframeBody):
 
         bound._on_second_opinion = on_late
         try:
-            parsed, overlays, info = bound.analyze_keyframe_full(
-                image, session_id=session_id, evidence_id=evidence_id
+            # Finding #8: thread joins + SAM parsing leave the event loop.
+            parsed, overlays, info = await asyncio.to_thread(
+                bound.analyze_keyframe_full,
+                image,
+                session_id=session_id,
+                evidence_id=evidence_id,
             )
+        except (BudgetExceeded, NoCachedResponse) as e:
+            raise HTTPException(status_code=402, detail=str(e))
         except (ValueError, MetaClientError) as e:
             raise HTTPException(status_code=502, detail=f"vision backend: {e}")
         # Meta-provider records already hit the log via the bound client's
@@ -446,15 +478,39 @@ async def vision_keyframe(session_id: str, body: KeyframeBody):
 @router.post("/sessions/{session_id}/vision/instrument")
 async def vision_instrument(session_id: str, body: InstrumentBody):
     session = _require_session(session_id)
+    _require_writable(session)
     image, _sha = _load_blob(body.blob_ref)
     analyzer = get_analyzer()
+    # Finding #7: the live analyzer is bound to the session so the Meta
+    # llm_call record reaches the audit log (only Baseten fallback records
+    # were appended before); the reading itself still becomes evidence
+    # only through the confirm route.
+    if isinstance(analyzer, LiveVisionAnalyzer):
+        bound = analyzer.bind(session)
+        try:
+            # Finding #8: the network call leaves the event loop.
+            reading, record = await asyncio.to_thread(bound.analyze_instrument_full, image)
+        except (BudgetExceeded, NoCachedResponse) as e:
+            raise HTTPException(status_code=402, detail=str(e))
+        except (ValueError, MetaClientError) as e:
+            raise HTTPException(status_code=502, detail=f"vision backend: {e}")
+        # Meta-provider records arrived via the bound client's on_call;
+        # Baseten fallback records are appended here.
+        if isinstance(record, dict) and record.get("provider") == "baseten":
+            try:
+                sess.get_registry().append(session, record.get("kind", "llm_call"), record)
+            except Exception:
+                pass
+        return reading
     full = getattr(analyzer, "analyze_instrument_full", None)
     try:
         if full is None:
-            reading = analyzer.analyze_instrument(image)
+            reading = await asyncio.to_thread(analyzer.analyze_instrument, image)
             record = None
         else:
-            reading, record = full(image)
+            reading, record = await asyncio.to_thread(full, image)
+    except (BudgetExceeded, NoCachedResponse) as e:
+        raise HTTPException(status_code=402, detail=str(e))
     except (ValueError, MetaClientError) as e:
         raise HTTPException(status_code=502, detail=f"vision backend: {e}")
     if isinstance(record, dict) and record.get("provider") == "baseten":
@@ -488,6 +544,7 @@ async def vision_engine_sound(session_id: str, body: EngineSoundBody):
     from mmc.vision import engine_sound as engine_sound_mod
 
     session = _require_session(session_id)
+    _require_writable(session)
     data, content_hash = _load_blob(body.blob_ref)
     cruise: tuple[bytes, float] | None = None
     if body.blob_ref_cruise is not None and body.rpm_cruise:
@@ -497,7 +554,9 @@ async def vision_engine_sound(session_id: str, body: EngineSoundBody):
     if cylinders is None:
         cylinders = engine_sound_mod.cylinders_from_vehicle(session.meta.get("vehicle"))
     try:
-        result = engine_sound_mod.analyze(
+        # Finding #8: stdlib DSP over ~200k samples leaves the event loop.
+        result = await asyncio.to_thread(
+            engine_sound_mod.analyze,
             data,
             float(body.rpm),
             cylinders,
@@ -530,6 +589,7 @@ async def vision_engine_sound(session_id: str, body: EngineSoundBody):
 @router.post("/sessions/{session_id}/vision/instrument/confirm")
 async def vision_instrument_confirm(session_id: str, body: ConfirmBody):
     session = _require_session(session_id)
+    _require_writable(session)
     _image, content_hash = _load_blob(body.blob_ref)
     try:
         reading = instr_mod.parse_instrument(dict(body.reading))

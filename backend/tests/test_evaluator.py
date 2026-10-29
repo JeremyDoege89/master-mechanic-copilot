@@ -89,6 +89,39 @@ def test_fuel_pressure_mapping():
     assert _eval("fuel_pressure_test", {"fuel_kpa": 350.0})[0] == "normal_pressure"
 
 
+def _manual(min_v, max_v):
+    return {"ref": "manual p.1", "content_hash": "abc", "min": min_v, "max": max_v,
+            "units": "kPa"}
+
+
+def test_manual_range_flips_fuel_pressure_outcome():
+    """Finding #13 (SPEC §5: manual > kp > physics): a manual range decides
+    the outcome, not just the citation. 350 kPa is normal against the
+    hardcoded 280–420 kPa, but low against a manual 380–420 kPa range."""
+    outcome, expected = _eval("fuel_pressure_test", {"fuel_kpa": 350.0},
+                              manual_spec=_manual(380.0, 420.0))
+    assert outcome == "low_pressure"
+    assert expected["source"]["kind"] == "manual_page"
+    assert expected["min"] == 380.0 and expected["max"] == 420.0
+
+
+def test_manual_range_flips_voltage_outcome():
+    """12.0 V at rest is low against the physics 12.4 V floor, but normal
+    against a manual 11.5–12.6 V rest range (and still low against a
+    manual 12.4–12.7 V range)."""
+    outcome, _ = _eval("battery_voltage_rest_running",
+                       {"voltage_v": 12.0, "engine_on": False},
+                       manual_spec={"ref": "manual p.2", "content_hash": "abc",
+                                    "min": 11.5, "max": 12.6, "units": "V"})
+    assert outcome == "normal"
+    outcome2, expected2 = _eval("battery_voltage_rest_running",
+                                {"voltage_v": 12.0, "engine_on": False},
+                                manual_spec={"ref": "manual p.2", "content_hash": "abc",
+                                             "min": 12.4, "max": 12.7, "units": "V"})
+    assert outcome2 == "low_rest"
+    assert expected2["source"]["kind"] == "manual_page"
+
+
 def test_unknown_evaluator_rejected():
     bad = PACK.tests["dtc_read"]
     import dataclasses

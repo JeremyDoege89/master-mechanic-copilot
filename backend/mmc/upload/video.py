@@ -14,6 +14,7 @@ a hint, tracking is concept-only. Uploads alone never move posteriors.
 from __future__ import annotations
 
 import json
+import logging
 import shutil
 import subprocess
 import tempfile
@@ -21,6 +22,8 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
+
+logger = logging.getLogger(__name__)
 
 from mmc.meta import sam as sam_mod
 from mmc.meta.budget import estimate_sam_video, estimate_spark
@@ -301,9 +304,18 @@ def analyze_clip(
         if defer_masks:
             pending_jobs.extend(jobs)
         else:
-            merge_frame_results(
-                overlays, [sam_mod.convert_frame_job(job) for job in jobs]
-            )
+            # Finding #12: one bad frame must not fail the whole clip.
+            converted = []
+            for job in jobs:
+                try:
+                    converted.append(sam_mod.convert_frame_job(job))
+                except Exception as exc:  # noqa: BLE001 - logged, skipped
+                    logger.warning(
+                        "mask conversion failed for frame %s: %s",
+                        job.get("frame_index"),
+                        exc,
+                    )
+            merge_frame_results(overlays, converted)
     out = {
         "events": events,
         "overlays": overlays,

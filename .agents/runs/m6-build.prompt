@@ -11,7 +11,9 @@ The plan in .agents/plans/M6.md is approved with these corrections:
    calls/hour) and the budget badge showing the public cap. Wonder, SAM video and uploads of video stay off in public.
 4. Engine-sound evidence (from M5O) appears in the report's expected-vs-measured table with its DSP numbers, labelled
    as signal processing, not AI.
-5. A SAM performance fix (m5-perf) has just landed in meta/sam.py and the vision routes; build on it, don't revert it.
+5. The review fixes (.agents/reviews/M5-M5U.md, job m5-fixes) landed before you: process-wide budget trackers via
+   get_tracker(name) with locks, locked EventStore.append, full-sha256 cache keys. Build the plan's §6 registry and
+   /budget on that, don't duplicate it. A SAM performance fix (m5-perf) has also landed in meta/sam.py and the vision routes; build on it, don't revert it.
    Keep the full backend suite under 3 minutes.
 
 Implement the plan in its order, each step with its test before the next. Keep all existing tests green. Run the

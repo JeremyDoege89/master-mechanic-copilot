@@ -23,6 +23,7 @@ sessions; replay sessions stay read-only for the processing routes.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import uuid
 from pathlib import Path
@@ -226,7 +227,7 @@ async def upload_csv_parse(session_id: str, body: CsvParseBody):
     registry.append(session, "evidence_added", evidence)
     for obs in csv_logs.to_observations(parsed, evidence["evidence_id"]):
         registry.append(session, "observation_added", obs)
-    derived, skipped = csv_logs.derive_tests(parsed)
+    derived, skipped = csv_logs.derive_tests(parsed, session.meta.get("vehicle"))
     submitted: list[dict] = []
     skipped = list(skipped)
     state = sess.compute_state(session)
@@ -315,13 +316,16 @@ async def upload_video_analyze(session_id: str, body: VideoAnalyzeBody):
         filename = "upload.mp4"
     analyzer = _bound_analyzer(session)
     try:
+        # Finding #8: ffprobe/ffmpeg/network leave the event loop.
         if isinstance(analyzer, LiveUploadAnalyzer):
             # Live path: boxes + events return right away; mask conversion
             # runs in the bounded pool and lands via the WS state push —
             # same pattern as the keyframe second-opinion diff.
-            out = analyzer.analyze_video(data, filename, defer_masks=True)
+            out = await asyncio.to_thread(
+                analyzer.analyze_video, data, filename, defer_masks=True
+            )
         else:
-            out = analyzer.analyze_video(data, filename)
+            out = await asyncio.to_thread(analyzer.analyze_video, data, filename)
     except BudgetExceeded as e:
         raise HTTPException(status_code=402, detail=str(e))
     except ValueError as e:

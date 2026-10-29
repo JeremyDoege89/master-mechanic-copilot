@@ -105,11 +105,17 @@ INSTRUMENT_SYSTEM = (
 
 
 def _image_part(image_bytes: bytes, mime: str = "image/jpeg") -> dict:
+    import hashlib
+
     b64 = base64.b64encode(image_bytes).decode("ascii")
     return {
         "type": "input_image",
+        # Finding #2: the stub keys the response cache, so it carries the
+        # sha256 of the ORIGINAL input bytes — a b64 prefix + length
+        # collides across different photos sharing a header.
         "image_url": f"data:{mime};base64,{b64[:32]}...<{(len(image_bytes))} bytes>",
         "_bytes_len": len(image_bytes),
+        "sha256": hashlib.sha256(image_bytes).hexdigest(),
     }
 
 

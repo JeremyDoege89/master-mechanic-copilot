@@ -279,10 +279,26 @@ def test_replay_cache_miss_raises_instead_of_spending(tmp_path):
 
 
 def test_budget_refusal_past_hard_stop(client, tmp_path, monkeypatch):
+    from mmc.meta.budget import BudgetTracker
+    from mmc.meta.client import MetaClient
+
     monkeypatch.setenv("MODEL_API_KEY", "test-key-not-a-secret")
-    monkeypatch.setenv("BUDGET_USD_HARD_STOP", "0.0001")
     monkeypatch.setenv("REPLAY_USE_CACHED_LLM", "false")
-    routes_uploads.set_analyzer(routes_uploads.LiveUploadAnalyzer())
+    # Explicit tiny ledger: default clients share the process-wide tracker
+    # (finding #1), so tests that need isolation inject their own budget.
+    def boom(model: str, kwargs: dict):
+        raise AssertionError("budget guard must fire before the transport")
+
+    tiny = MetaClient(
+        api_key="test-key-not-a-secret",
+        models={"spark": "muse-spark-1.3", "sam": "sam-3.1"},
+        budget=BudgetTracker(hard_stop_usd=0.0001),
+        cache_dir=tmp_path / "meta",
+        replay_cached=False,
+        transport=boom,
+        sleep=lambda s: None,
+    )
+    routes_uploads.set_analyzer(routes_uploads.LiveUploadAnalyzer(tiny))
     sid = _create_session(client)
     pdf = (FIXTURES / "upload_spec_test.pdf").read_bytes()
     up = _upload(client, sid, pdf, "manual.pdf", "manual_pdf")

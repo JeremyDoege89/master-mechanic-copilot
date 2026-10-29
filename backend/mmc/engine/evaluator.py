@@ -23,6 +23,16 @@ def _expected(kind: str, ref: str, detail: str = "") -> dict:
     return {"source": {"kind": kind, "ref": ref}, "outcome": detail}
 
 
+# Tests whose expectation is a numeric [min, max] range: a manual page
+# range (SPEC §5 source priority manual > kp > physics) is injected into
+# the measured payload so it DECIDES the outcome, not just the citation.
+# (evaluator, (measured lo key, measured hi key)).
+_MANUAL_RANGE_KEYS = {
+    "rule.fuel_pressure": ("spec_min_kpa", "spec_max_kpa"),
+    "physics.voltage": ("spec_min_v", "spec_max_v"),
+}
+
+
 def evaluate(
     test: KpTest,
     measured: dict,
@@ -32,7 +42,13 @@ def evaluate(
     fn = _EVALUATORS.get(test.evaluator)
     if fn is None:
         raise ValueError(f"unknown evaluator {test.evaluator!r} for test {test.ref}")
-    outcome, expected = fn(test, measured)
+    work = dict(measured)
+    if manual_spec is not None and test.evaluator in _MANUAL_RANGE_KEYS:
+        lo_key, hi_key = _MANUAL_RANGE_KEYS[test.evaluator]
+        if manual_spec.get("min") is not None and manual_spec.get("max") is not None:
+            work[lo_key] = float(manual_spec["min"])
+            work[hi_key] = float(manual_spec["max"])
+    outcome, expected = fn(test, work)
     if manual_spec is not None:
         source = {"kind": "manual_page", **manual_spec}
         expected = {"source": source, "outcome": expected.get("outcome", "")}
@@ -85,19 +101,17 @@ def _voltage(test: KpTest, measured: dict) -> tuple[str, dict]:
     v = float(measured["voltage_v"])
     engine_on = bool(measured.get("engine_on", False))
     if engine_on:
-        if v < physics.VOLT_RUN_MIN:
-            outcome = "low_running"
-        elif v > physics.VOLT_RUN_MAX:
-            outcome = "overcharging"
-        else:
-            outcome = "normal"
+        lo = float(measured.get("spec_min_v", physics.VOLT_RUN_MIN))
+        hi = float(measured.get("spec_max_v", physics.VOLT_RUN_MAX))
     else:
-        if v < physics.VOLT_REST_MIN:
-            outcome = "low_rest"
-        elif v > 12.9:
-            outcome = "overcharging"
-        else:
-            outcome = "normal"
+        lo = float(measured.get("spec_min_v", physics.VOLT_REST_MIN))
+        hi = float(measured.get("spec_max_v", 12.9))
+    if v < lo:
+        outcome = "low_running" if engine_on else "low_rest"
+    elif v > hi:
+        outcome = "overcharging"
+    else:
+        outcome = "normal"
     return outcome, _expected("physics", "physics.voltage", outcome)
 
 

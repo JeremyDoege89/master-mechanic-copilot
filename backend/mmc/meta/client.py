@@ -32,7 +32,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from .budget import BudgetExceeded, BudgetTracker, actual_cost_from_usage
+from .budget import BudgetExceeded, BudgetTracker, actual_cost_from_usage, get_tracker
 
 META_BASE_URL = "https://api.meta.ai/v1"
 
@@ -106,6 +106,29 @@ def call_record(kind: str, model: str, request: dict, result: "LLMCallResult") -
 
 def _is_contributor_model(model_id: str) -> bool:
     return model_id.strip().lower().endswith("-contributor")
+
+
+# Finding #14: per-key Meta model-ID allowlist (mirrors the Baseten
+# client's exact-pin enforcement). A foreign ID with a changed base URL
+# (MODEL_SPARK=gpt-4o) must raise instead of being called.
+MODEL_KEY_PREFIXES = {
+    "spark": ("muse-spark-",),
+    "wonder": ("muse-wonder-",),
+    "sam": ("sam-",),
+    "asr": ("muse-voice-",),
+}
+
+
+def _check_model_id(key: str, model_id: str) -> None:
+    if not model_id:
+        return  # missing pins are reported by the caller, not here
+    if _is_contributor_model(model_id):
+        raise MetaClientError(f"refusing contributor-mode model ID for {key}: {model_id!r}")
+    prefixes = MODEL_KEY_PREFIXES.get(key)
+    if prefixes is not None and not model_id.strip().lower().startswith(prefixes):
+        raise MetaClientError(
+            f"refusing non-Meta model ID for {key}: {model_id!r} (want prefix {prefixes!r})"
+        )
 
 
 def _event_to_dict(event: Any) -> dict:
@@ -209,10 +232,11 @@ class MetaClient:
             short = var[len("MODEL_") :].lower()
             pins.setdefault(short, os.environ.get(var, "") or DEFAULT_MODELS[short])
         for name, model_id in pins.items():
-            if model_id and _is_contributor_model(model_id):
-                raise MetaClientError(f"refusing contributor-mode model ID for {name}: {model_id!r}")
+            _check_model_id(name, model_id)
         self.models = pins
-        self.budget = budget or BudgetTracker.from_env()
+        # Process-wide ledger (finding #1): every default client shares
+        # the $120 Meta tracker, so spend accumulates across bind() calls.
+        self.budget = budget if budget is not None else get_tracker("meta")
         if cache_dir is None:
             cache_dir = Path(os.environ.get("DATA_DIR", "./data")) / "llm_cache"
         self.cache_dir = Path(cache_dir)
@@ -281,6 +305,7 @@ class MetaClient:
         request: dict,
         estimate_usd: float,
         response_kwargs: dict | None = None,
+        cache_key: dict | None = None,
     ) -> tuple[list[dict], str, dict, dict]:
         """One guarded + cached streaming Responses call (SAM 3.1).
 
@@ -291,13 +316,17 @@ class MetaClient:
         ``response.completed`` event (SAM reports ``images_processed`` and
         no token counts); cost accounting uses it, falling back to the
         pre-call estimate only when the stream carries no usable counts.
+
+        ``cache_key`` (findings #2/#9) overrides which fields feed the
+        cache filename: media callers pass a stable subset keyed on the
+        ORIGINAL input bytes, while ``request`` keeps the sent-bytes
+        hash/scale as record metadata.
         """
         model = self.models.get(model_key, "")
         if not model:
             raise MetaClientError(f"no model pinned for {model_key!r} (env MODEL_{model_key.upper()})")
-        if _is_contributor_model(model):
-            raise MetaClientError(f"refusing contributor-mode model ID: {model!r}")
-        sha = request_sha256({"model": model, **request})
+        _check_model_id(model_key, model)
+        sha = request_sha256({"model": model, **(cache_key if cache_key is not None else request)})
 
         hit = self._cache_read(sha)
         if hit is not None and self.replay_cached:
@@ -336,15 +365,19 @@ class MetaClient:
 
         text, usage = _stream_text_and_usage(events)
         actual = actual_cost_from_usage(model, usage)
+        estimated = False
         if actual <= 0.0 and estimate_usd > 0.0:
             # SAM usage carries counts only for images; video/unknown shapes
             # fall back to the pre-call estimate as the ledger entry.
             actual = estimate_usd
+            estimated = True
         self.budget.add(actual)
         result = LLMCallResult(
             model=model, output_text=text, usage=usage, cost_usd=actual, cached=False, request_sha=sha
         )
         record = call_record(kind, model, request, result)
+        if estimated:
+            record["cost_estimated"] = True
         record["events"] = events
         self._cache_write(sha, record)
         if self._on_call is not None:
@@ -429,19 +462,20 @@ class MetaClient:
         request: dict,
         estimate_usd: float,
         response_kwargs: dict | None = None,
+        cache_key: dict | None = None,
     ) -> tuple[LLMCallResult, dict]:
         """One guarded + cached Responses call.
 
         Returns ``(result, key-free record)``. ``request`` is the cacheable,
         loggable description of the call (model, input, params); ``kind``
-        is ``llm_call`` or ``sam_call``.
+        is ``llm_call`` or ``sam_call``. ``cache_key`` optionally overrides
+        the fields feeding the cache filename (findings #2/#9).
         """
         model = self.models.get(model_key, "")
         if not model:
             raise MetaClientError(f"no model pinned for {model_key!r} (env MODEL_{model_key.upper()})")
-        if _is_contributor_model(model):
-            raise MetaClientError(f"refusing contributor-mode model ID: {model!r}")
-        sha = request_sha256({"model": model, **request})
+        _check_model_id(model_key, model)
+        sha = request_sha256({"model": model, **(cache_key if cache_key is not None else request)})
 
         hit = self._cache_read(sha)
         if hit is not None and self.replay_cached:
@@ -485,10 +519,14 @@ class MetaClient:
         text = self._response_text(response)
         usage = self._response_usage(response)
         actual = actual_cost_from_usage(model, usage)
-        if actual <= 0.0 and estimate_usd > 0.0 and "sam" in model.lower():
-            # SAM bills per image/frame, not per token: usage carries no
-            # token counts, so the pre-call estimate is the ledger entry.
+        estimated = False
+        if actual <= 0.0 and estimate_usd > 0.0:
+            # Finding #3: any API/proxy shape drift that yields empty or
+            # unknown usage must not make a paid call free in the ledger —
+            # book the pre-call estimate (SAM bills per image/frame, so its
+            # usage often carries no token counts at all).
             actual = estimate_usd
+            estimated = True
         self.budget.add(actual)
         result = LLMCallResult(
             model=model, output_text=text, usage=usage, cost_usd=actual, cached=False, request_sha=sha
@@ -498,6 +536,8 @@ class MetaClient:
         except ValueError:
             pass
         record = call_record(kind, model, request, result)
+        if estimated:
+            record["cost_estimated"] = True
         self._cache_write(sha, record)
         if self._on_call is not None:
             self._on_call(record)
