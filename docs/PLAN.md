@@ -26,7 +26,7 @@ SAM 3.1 finds parts, Voice Transcribe keeps hands free, and Muse Code built it.
 | Repo | Public on GitHub (`JeremyDoege89/master-mechanic-copilot`) |
 | `.env` | Created from `.env.example` without the key (the key comes from `~/.config/meta/model-api.env` via your shell) |
 | Phone (moto g, adb over Tailscale) | Connected Oct 28 |
-| Code | Written by Muse Code, driven headlessly (`.agents/muse-run.sh`; plans in `.agents/plans/`). **Done (Oct 29 AM): M0-M3, M4 built (Ford check pending), M5 vision, upload mode, Spark Open (second opinion, fallback, engine-sound DSP), SAM performance fix, all 15 Wonder review findings fixed.** All live API paths verified (Spark, SAM image + video, Files API, Baseten). 342 backend + 84 Android tests; suite under 2 min. **M6 done** (levels, safety gates, report + Wonder review, web Replay/Report, budget badge) and deployed on Modal. **Next: M6B** (full judge demo bundle + web design pass), M6 review running. Waiting on owner: Ford baseline/M4 check, M5 photos. |
+| Code | Written by Muse Code, driven headlessly (`.agents/muse-run.sh`; plans in `.agents/plans/`). **Done (Oct 29 AM): M0-M3, M4 built (Ford check pending), M5 vision, upload mode, Spark Open, SAM perf, M6 (levels, safety gates, report + Wonder review, web Replay/Report), M6B (two full demo investigations from real recorded AI outputs, judge UX), all 27 Wonder review findings fixed.** Judge site live on Modal. 419 backend + 89 Android tests; suite ~2 min. **Next: overlay/report polish, then M7** (voice, README, release APK). Waiting on owner: Ford baseline/M4 check, M5 photos. |
 | Model routing | Checked Oct 28 against `GET /v1/models`. **Product:** Spark 1.3 for reasoning, vision, instrument reading and PDF/video extraction; SAM 3.1 for masks and tracking; Voice Transcribe for hands-free; Wonder once per report for review; Muse Image kept out of diagnosis. **Muse Code:** `*-plan` and `*-review` jobs run on `muse-wonder-1.0`, builds and fixes on `muse-spark-1.3` (high), set in `.agents/muse-run.sh`. Standard IDs only, never `-contributor`. |
 | CI | GitHub runs backend tests + replay check + web build; Android builds and tests run on dreamz-code (see DECISIONS) |
 
@@ -122,7 +122,7 @@ Later:
 - [ ] 10 engine-bay photos + 10 multimeter photos (M5 acceptance set)
 - [ ] Screen recording of the D3 gate run
 - [ ] Demo video ≤ 3:00 (target 2:45), public link
-- [ ] Deployed Replay & Report URL with a 60-second judge path in `docs/JUDGES.md`
+- [x] Deployed Replay & Report URL with a 60-second judge path in `docs/JUDGES.md` (live; JUDGES.md written, final pass in M7)
 - [ ] Signed release APK with simulator mode on a GitHub Release
 
 ## Risks to watch
