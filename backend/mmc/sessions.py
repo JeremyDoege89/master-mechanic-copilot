@@ -139,9 +139,67 @@ def validate(schema_name: str, payload: dict) -> None:
     _validators()[schema_name].validate(payload)
 
 
+PACK_VERSION_FILES = {
+    "ford-gen-v1": "ford_gen_v1.yaml",
+    "generic-gas-v1": "generic_gas_v1.yaml",
+}
+
+FORD_PACK_VERSION = "ford-gen-v1"
+GENERIC_PACK_VERSION = "generic-gas-v1"
+
+
+@lru_cache(maxsize=None)
+def get_pack_by_version(version: str) -> KnowledgePack:
+    filename = PACK_VERSION_FILES.get(version)
+    if filename is None:
+        raise ValueError(f"unknown knowledge pack {version!r}")
+    return load_pack(packs_dir() / filename)
+
+
 @lru_cache(maxsize=1)
 def get_pack() -> KnowledgePack:
-    return load_pack(packs_dir() / "ford_gen_v1.yaml")
+    """Legacy Ford default (demo bundles + callers without a session).
+
+    Real sessions must use :func:`get_pack_for_session` so a Mazda (or an
+    unknown make) folds with ``generic-gas-v1``.
+    """
+    return get_pack_by_version(FORD_PACK_VERSION)
+
+
+def pack_version_for_vehicle(vehicle: dict | None) -> str:
+    """Pack id for a session vehicle: Ford -> ford pack, else generic.
+
+    The make match is case-insensitive on the stripped string; a missing
+    vehicle or a missing/blank make falls through to the generic pack.
+    """
+    make = ""
+    if isinstance(vehicle, dict):
+        make = str(vehicle.get("make") or "").strip().lower()
+    if make == "ford":
+        return FORD_PACK_VERSION
+    return GENERIC_PACK_VERSION
+
+
+def get_pack_for_session(session: Session) -> KnowledgePack:
+    """Knowledge pack recorded on the session (``meta["kp_version"]``).
+
+    Falls back to the vehicle make for sessions created before the pack
+    id was recorded per session.
+    """
+    version = None
+    try:
+        meta = getattr(session, "meta", {}) or {}
+        version = meta.get("kp_version")
+    except Exception:
+        version = None
+    if isinstance(version, str) and version in PACK_VERSION_FILES:
+        return get_pack_by_version(version)
+    vehicle = None
+    try:
+        vehicle = session.meta.get("vehicle")
+    except Exception:
+        vehicle = None
+    return get_pack_by_version(pack_version_for_vehicle(vehicle))
 
 
 def data_root() -> Path:
@@ -214,7 +272,7 @@ class SessionRegistry:
             raise ValueError(f"bad user_level {user_level!r}")
         if mode not in MODES:
             raise ValueError(f"bad mode {mode!r}")
-        pack = get_pack()
+        pack = get_pack_by_version(pack_version_for_vehicle(vehicle))
         session_id = uuid.uuid4().hex
         redacted_vehicle: dict | None = None
         vin_sha: str | None = None
@@ -299,7 +357,7 @@ def compute_state(session: Session, upto_seq: int | None = None) -> dict:
     ``upto_seq`` folds only events with ``seq <= upto_seq`` (replay
     scrubber); None folds the whole log.
     """
-    pack = get_pack()
+    pack = get_pack_for_session(session)
     meta = session.meta
     posteriors = {h: spec["prior"] for h, spec in pack.hypotheses.items()}
     histories: dict[str, list[dict]] = {h: [] for h in posteriors}
@@ -370,7 +428,13 @@ def compute_state(session: Session, upto_seq: int | None = None) -> dict:
 
     performed = {str(r["test_id"]) for r in results}
     ranked, blocked = planner.rank_tests(
-        pack, posteriors, meta["user_level"], list(meta["tools"]), acked, performed
+        pack,
+        posteriors,
+        meta["user_level"],
+        list(meta["tools"]),
+        acked,
+        performed,
+        meta.get("vehicle"),
     )
     next_tests = []
     for rec in ranked:

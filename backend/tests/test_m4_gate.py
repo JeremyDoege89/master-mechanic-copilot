@@ -74,7 +74,12 @@ def client(tmp_path, monkeypatch):
 
 
 def _create_session(client: TestClient, **kwargs) -> str:
-    body = {"user_level": "L1", "tools": [], "mode": "sim"}
+    body = {
+        "user_level": "L1",
+        "tools": [],
+        "mode": "sim",
+        "vehicle": {"make": "Ford", "model": "Focus", "year": 2012, "engine": "2.0L I4"},
+    }
     body.update(kwargs)
     r = client.post("/sessions", json=body)
     assert r.status_code == 200, r.text

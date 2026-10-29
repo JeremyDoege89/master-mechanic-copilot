@@ -351,7 +351,13 @@ class AsrProxy:
         """
         from mmc.meta.budget import BudgetExceeded
 
-        config = session_config()
+        try:
+            from mmc import sessions as _sess_mod
+
+            _pack = _sess_mod.get_pack_for_session(session)
+        except Exception:
+            _pack = None
+        config = session_config(_pack)
         upstream = await self._factory(config)
 
         async def _send(text: str) -> None:

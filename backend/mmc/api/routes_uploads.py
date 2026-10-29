@@ -268,12 +268,22 @@ def _submit_derived(
     session: sess.Session, test_ref: str, measured: dict, evidence_ids: list[str]
 ) -> dict:
     """Submit one CSV-derived test through the same folds as the result route."""
-    pack = sess.get_pack()
+    pack = sess.get_pack_for_session(session)
     test = pack.tests.get(test_ref)
     if test is None:  # pragma: no cover - derive_tests only emits known refs
         raise HTTPException(status_code=400, detail=f"unknown test {test_ref!r}")
+    measured_in = dict(measured)
+    if test.evaluator == "physics.maf_expected" and measured_in.get("disp_l") is None:
+        disp = csv_logs.displacement_l(session.meta.get("vehicle"))
+        if disp is None:
+            raise HTTPException(
+                status_code=400,
+                detail="cannot evaluate: unknown engine displacement "
+                "(set vehicle.engine like '2.0L I4' or vehicle DisplacementL from vPIC)",
+            )
+        measured_in["disp_l"] = disp
     try:
-        outcome, expected = evaluator_mod.evaluate(test, dict(measured))
+        outcome, expected = evaluator_mod.evaluate(test, measured_in)
     except (ValueError, KeyError) as e:
         raise HTTPException(status_code=400, detail=f"cannot evaluate: {e}")
     result_id = uuid.uuid4().hex
@@ -281,7 +291,7 @@ def _submit_derived(
         "result_id": result_id,
         "test_id": test_ref,
         "expected": expected,
-        "measured": {"value": dict(measured)},
+        "measured": {"value": dict(measured_in)},
         "outcome": outcome,
         "evaluator": test.evaluator,
         "evidence_ids": list(evidence_ids),

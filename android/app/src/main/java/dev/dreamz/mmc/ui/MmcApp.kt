@@ -64,7 +64,7 @@ private class RecordingTransport(private val inner: Transport, private val rec: 
 
 private fun measuredTemplate(testRef: String): String = when (testRef) {
     "trim_idle_vs_2500" -> """{"idle_trim_pct": 0.0, "cruise_trim_pct": 0.0}"""
-    "maf_pid_plausibility" -> """{"maf_gs": 0.0, "rpm": 750.0, "disp_l": 2.0}"""
+    "maf_pid_plausibility" -> """{"maf_gs": 0.0, "rpm": 750.0}"""
     "iat_plausibility" -> """{"iat_c": 25.0}"""
     "ect_warmup_curve" -> """{"ect_series_c": [20.0, 45.0, 70.0, 88.0, 93.0, 95.0, 95.0]}"""
     "dtc_read" -> """{"dtcs": []}"""
@@ -591,7 +591,9 @@ class MmcController(context: Context, private val buildDefaultUrl: String) {
             "dtc_read" -> JSONObject().put("dtcs", JSONArray(readDtcsNow(d)))
             "maf_pid_plausibility" -> {
                 val rpm = readPidNow(0x0C)
-                JSONObject().put("maf_gs", readPidNow(0x10)).put("rpm", rpm).put("disp_l", 2.0)
+                // Displacement comes from the backend session vehicle
+                // (engine string or vPIC DisplacementL); never hardcoded here.
+                JSONObject().put("maf_gs", readPidNow(0x10)).put("rpm", rpm)
             }
             "iat_plausibility" -> JSONObject().put("iat_c", readPidNow(0x0F))
             "ect_warmup_curve" -> {

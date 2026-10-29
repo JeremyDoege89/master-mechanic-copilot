@@ -53,12 +53,40 @@ def score(test: KpTest, eig: float) -> float:
     return eig / max(denom, 1e-6)
 
 
+def _vehicle_displacement_l(vehicle: dict | None) -> float | None:
+    """Displacement from the session vehicle (vPIC DisplacementL or engine)."""
+    if not isinstance(vehicle, dict):
+        return None
+    for key in ("DisplacementL", "displacement_l", "displacementL", "displacement"):
+        raw = vehicle.get(key)
+        if raw is None or raw == "":
+            continue
+        try:
+            value = float(str(raw).strip().rstrip("lL").strip())
+        except (ValueError, TypeError):
+            continue
+        if value > 0:
+            return value
+    import re as _re
+
+    engine = str(vehicle.get("engine") or "")
+    match = _re.search(r"(\d+(?:\.\d+)?)\s*l", engine, _re.IGNORECASE)
+    if not match:
+        return None
+    try:
+        value = float(match.group(1))
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
 def blocked_reasons(
     test: KpTest,
     user_level: str,
     user_tools: list[str],
     acknowledged_gates: set[str],
     performed: set[str],
+    vehicle: dict | None = None,
 ) -> list[str]:
     reasons = []
     if LEVELS[test.min_level] > LEVELS[user_level]:
@@ -70,6 +98,11 @@ def blocked_reasons(
         reasons.append(f"safety gate not acknowledged: {test.safety_gate}")
     if test.ref in performed:
         reasons.append("already performed")
+    if test.evaluator == "physics.maf_expected" and _vehicle_displacement_l(vehicle) is None:
+        reasons.append(
+            "unknown engine displacement (set vehicle.engine like '2.0L I4' "
+            "or vehicle DisplacementL from vPIC)"
+        )
     return reasons
 
 
@@ -80,6 +113,7 @@ def rank_tests(
     user_tools: list[str],
     acknowledged_gates: set[str] | None = None,
     performed: set[str] | None = None,
+    vehicle: dict | None = None,
 ) -> tuple[list[dict], list[dict]]:
     """Return (ranked runnable recommendations, blocked entries)."""
     acknowledged_gates = acknowledged_gates or set()
@@ -87,7 +121,9 @@ def rank_tests(
     ranked: list[dict] = []
     blocked: list[dict] = []
     for ref, test in pack.tests.items():
-        reasons = blocked_reasons(test, user_level, list(user_tools), acknowledged_gates, performed)
+        reasons = blocked_reasons(
+            test, user_level, list(user_tools), acknowledged_gates, performed, vehicle
+        )
         if reasons:
             blocked.append({"kp_test_ref": ref, "blocked_reasons": reasons})
             continue

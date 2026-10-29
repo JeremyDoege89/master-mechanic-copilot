@@ -373,7 +373,7 @@ async def download_blob(session_id: str, sha256: str):
 async def post_test_result(session_id: str, test_ref: str, body: ResultBody):
     session = _require_session(session_id)
     _require_writable(session)
-    pack = sess.get_pack()
+    pack = sess.get_pack_for_session(session)
     test = pack.tests.get(test_ref)
     if test is None:
         raise HTTPException(status_code=404, detail=f"unknown test {test_ref!r}")
@@ -402,13 +402,25 @@ async def post_test_result(session_id: str, test_ref: str, body: ResultBody):
                 # before the first append below).
                 raise HTTPException(status_code=400, detail=f"unknown spec_id {body.spec_id!r}")
             manual_spec = specs_mod.manual_spec_for(spec)
+        measured_in = dict(body.measured)
+        if test.evaluator == "physics.maf_expected" and measured_in.get("disp_l") is None:
+            from mmc.upload import csv_logs as _csv_logs
+
+            disp = _csv_logs.displacement_l(session.meta.get("vehicle"))
+            if disp is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail="cannot evaluate: unknown engine displacement "
+                    "(set vehicle.engine like '2.0L I4' or vehicle DisplacementL from vPIC)",
+                )
+            measured_in["disp_l"] = disp
         try:
-            outcome, expected = evaluator_mod.evaluate(test, dict(body.measured), manual_spec)
+            outcome, expected = evaluator_mod.evaluate(test, measured_in, manual_spec)
         except (ValueError, KeyError) as e:
             raise HTTPException(status_code=400, detail=f"cannot evaluate: {e}")
 
         result_id = uuid.uuid4().hex
-        measured_doc = {"value": dict(body.measured)}
+        measured_doc = {"value": dict(measured_in)}
         if body.conditions:
             measured_doc["conditions"] = dict(body.conditions)
         test_result_payload = {

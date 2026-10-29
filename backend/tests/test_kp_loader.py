@@ -58,12 +58,19 @@ def test_ford_pack_loads_and_priors_normalize():
     assert pack.dependency_groups == [["stft_b1", "ltft_b1"]]
 
 
-def test_generic_pack_loads_with_uniform_fill():
+def test_generic_pack_loads_with_uniform_fill(tmp_path):
     pack = load_pack(PACKS_DIR / "generic_gas_v1.yaml")
-    # trim test omits most hypotheses -> uniform fill over its 4 outcomes.
+    assert pack.version == "generic-gas-v1"
+    # Generic is complete for the 9 planner tests: trim carries explicit
+    # Ford-equal rows (no uniform fill needed for charging_low).
     row = pack.tests["trim_idle_vs_2500"].likelihoods["charging_low"]
     assert set(row) == {"lean_idle_normal_cruise", "lean_both", "normal", "rich"}
-    assert all(abs(p - 0.25) < 1e-12 for p in row.values())
+    assert row["normal"] == 0.55
+    # Loader uniform fill still works for omitted hypotheses (tmp pack).
+    sparse = _write_pack(tmp_path, {"h1": {"a": 0.5, "b": 0.5}})
+    filled = load_pack(sparse)
+    assert set(filled.tests["t1"].likelihoods["h2"]) == {"a", "b"}
+    assert all(abs(p - 0.5) < 1e-12 for p in filled.tests["t1"].likelihoods["h2"].values())
 
 
 def test_likelihood_rows_sum_to_one():

@@ -1,7 +1,7 @@
 """Export a finished backend session to a judge .mmrec bundle (owner-run).
 
 Usage:
-    scripts/export_session_bundle.py <session_id> [--label "Ford F-150 2.7L, MAF unplugged"] [--out NAME.mmrec] [--data-dir DIR]
+    scripts/export_session_bundle.py <session_id> [--label "Mazda 3 2.0L, MAF unplugged"] [--out NAME.mmrec] [--data-dir DIR]
 
 Reads the live/upload session under DATA_DIR/sessions/<session_id>/ and
 writes a judge bundle with:
@@ -77,7 +77,7 @@ def _cache_rel_for(payload: dict, sha: str) -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Export a finished session to a judge .mmrec.")
     parser.add_argument("session_id", help="backend session id (live or upload mode)")
-    parser.add_argument("--label", default="", help='judge display label, e.g. "Ford F-150 2.7L, MAF unplugged"')
+    parser.add_argument("--label", default="", help='judge display label, e.g. "Mazda 3 2.0L, MAF unplugged"')
     parser.add_argument("--out", default="", help="output .mmrec path (default: fixtures/real-<short>.mmrec)")
     parser.add_argument("--data-dir", default="", help="DATA_DIR override (default: $DATA_DIR or backend/data)")
     args = parser.parse_args(argv)

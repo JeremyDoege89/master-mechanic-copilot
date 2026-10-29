@@ -60,7 +60,7 @@ No hand editing — one command per session after the drive:
    recording's `meta.json`).
 2. Export the finished backend session (live or upload mode, report with
    Wonder review already built):
-   `scripts/export_session_bundle.py <session_id> --label "Ford F-150 2.7L, MAF unplugged" --out backend/tests/fixtures/sessions/real-maf-unplugged.mmrec`
+   `scripts/export_session_bundle.py <session_id> --label "Mazda 3 2.0L, MAF unplugged" --out backend/tests/fixtures/sessions/real-maf-unplugged.mmrec`
    The bundle carries the hash-chained `events.jsonl`, the phone's
    adapter transcript, every referenced blob, the report with its Wonder
    review, and the cached model responses the session used — replay stays

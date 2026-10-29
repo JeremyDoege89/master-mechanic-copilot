@@ -69,10 +69,15 @@ def _trim(test: KpTest, measured: dict) -> tuple[str, dict]:
 
 
 def _maf(test: KpTest, measured: dict) -> tuple[str, dict]:
+    if measured.get("disp_l") is None:
+        raise ValueError(
+            "unknown engine displacement (set vehicle.engine like '2.0L I4' "
+            "or vehicle DisplacementL from vPIC)"
+        )
     maf_gs = float(measured["maf_gs"])
     exp = physics.maf_expected(
         float(measured["rpm"]),
-        float(measured.get("disp_l", 2.0)),
+        float(measured["disp_l"]),
         float(measured.get("map_kpa", 30.0)),
         float(measured.get("baro_kpa", 100.0)),
     )

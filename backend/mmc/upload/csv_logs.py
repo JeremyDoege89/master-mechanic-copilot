@@ -278,14 +278,26 @@ _DISP_RE = re.compile(r"(\d+(?:\.\d+)?)\s*l", re.IGNORECASE)
 def displacement_l(vehicle: dict | None) -> float | None:
     """Engine displacement in litres from the session vehicle.
 
-    Parses ``vehicle["engine"]`` (e.g. ``"2.0L I4"``). Returns None when
-    the descriptor is missing or unparseable — callers skip the MAF
-    plausibility derivation with a reason instead of assuming 2.0 L
-    (finding #4). The count is never guessed.
+    Prefers an explicit numeric field (vPIC ``DisplacementL`` and its
+    common spellings) and falls back to parsing ``vehicle["engine"]``
+    (e.g. ``"2.0L I4"``). Returns None when no source parses — callers
+    skip the MAF plausibility derivation with a reason instead of
+    assuming 2.0 L (finding #4). The count is never guessed.
     """
-    engine = ""
     if isinstance(vehicle, dict):
+        for key in ("DisplacementL", "displacement_l", "displacementL", "displacement"):
+            raw = vehicle.get(key)
+            if raw is None or raw == "":
+                continue
+            try:
+                value = float(str(raw).strip().rstrip("lL").strip())
+            except (ValueError, TypeError):
+                continue
+            if value > 0:
+                return value
         engine = str(vehicle.get("engine") or "")
+    else:
+        engine = ""
     if not engine:
         return None
     match = _DISP_RE.search(engine)

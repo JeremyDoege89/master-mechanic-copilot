@@ -52,7 +52,13 @@ tests:
     likelihoods:
       vacuum_leak_post_maf: {lean_idle_normal_cruise: 0.75, lean_both: 0.15, normal: 0.08, rich: 0.02}
       maf_contaminated: {lean_idle_normal_cruise: 0.15, lean_both: 0.65, normal: 0.15, rich: 0.05}
+      maf_circuit_open: {lean_idle_normal_cruise: 0.15, lean_both: 0.60, normal: 0.20, rich: 0.05}
+      iat_circuit_open: {lean_idle_normal_cruise: 0.08, lean_both: 0.07, normal: 0.80, rich: 0.05}
       fuel_delivery_low: {lean_idle_normal_cruise: 0.10, lean_both: 0.70, normal: 0.15, rich: 0.05}
+      thermostat_stuck_open: {lean_idle_normal_cruise: 0.08, lean_both: 0.07, normal: 0.82, rich: 0.03}
+      ignition_misfire_cyl: {lean_idle_normal_cruise: 0.08, lean_both: 0.07, normal: 0.75, rich: 0.10}
+      charging_low: {lean_idle_normal_cruise: 0.15, lean_both: 0.15, normal: 0.55, rich: 0.15}
+      o2_slow_b1s1: {lean_idle_normal_cruise: 0.15, lean_both: 0.15, normal: 0.50, rich: 0.20}
       healthy: {lean_idle_normal_cruise: 0.05, lean_both: 0.05, normal: 0.85, rich: 0.05}
       other: {lean_idle_normal_cruise: 0.20, lean_both: 0.20, normal: 0.50, rich: 0.10}
 
@@ -67,8 +73,15 @@ tests:
     outcomes: [reads_zero, under_reports, plausible, over_reports]
     evaluator: physics.maf_expected
     likelihoods:
-      maf_circuit_open: {reads_zero: 0.90, under_reports: 0.04, plausible: 0.04, over_reports: 0.02}
+      vacuum_leak_post_maf: {reads_zero: 0.05, under_reports: 0.25, plausible: 0.65, over_reports: 0.05}
       maf_contaminated: {reads_zero: 0.05, under_reports: 0.70, plausible: 0.20, over_reports: 0.05}
+      maf_circuit_open: {reads_zero: 0.90, under_reports: 0.04, plausible: 0.04, over_reports: 0.02}
+      iat_circuit_open: {reads_zero: 0.05, under_reports: 0.10, plausible: 0.80, over_reports: 0.05}
+      fuel_delivery_low: {reads_zero: 0.60, under_reports: 0.10, plausible: 0.20, over_reports: 0.10}
+      thermostat_stuck_open: {reads_zero: 0.05, under_reports: 0.10, plausible: 0.80, over_reports: 0.05}
+      ignition_misfire_cyl: {reads_zero: 0.05, under_reports: 0.10, plausible: 0.80, over_reports: 0.05}
+      charging_low: {reads_zero: 0.05, under_reports: 0.23, plausible: 0.55, over_reports: 0.17}
+      o2_slow_b1s1: {reads_zero: 0.05, under_reports: 0.23, plausible: 0.55, over_reports: 0.17}
       healthy: {reads_zero: 0.02, under_reports: 0.08, plausible: 0.85, over_reports: 0.05}
       other: {reads_zero: 0.15, under_reports: 0.20, plausible: 0.50, over_reports: 0.15}
 
@@ -84,6 +97,14 @@ tests:
     evaluator: visual.direct
     likelihoods:
       vacuum_leak_post_maf: {cracked_disconnected: 0.65, looks_ok: 0.25, inconclusive: 0.10}
+      maf_contaminated: {cracked_disconnected: 0.05, looks_ok: 0.80, inconclusive: 0.15}
+      maf_circuit_open: {cracked_disconnected: 0.05, looks_ok: 0.80, inconclusive: 0.15}
+      iat_circuit_open: {cracked_disconnected: 0.05, looks_ok: 0.80, inconclusive: 0.15}
+      fuel_delivery_low: {cracked_disconnected: 0.05, looks_ok: 0.80, inconclusive: 0.15}
+      thermostat_stuck_open: {cracked_disconnected: 0.05, looks_ok: 0.80, inconclusive: 0.15}
+      ignition_misfire_cyl: {cracked_disconnected: 0.05, looks_ok: 0.80, inconclusive: 0.15}
+      charging_low: {cracked_disconnected: 0.05, looks_ok: 0.80, inconclusive: 0.15}
+      o2_slow_b1s1: {cracked_disconnected: 0.05, looks_ok: 0.80, inconclusive: 0.15}
       healthy: {cracked_disconnected: 0.05, looks_ok: 0.85, inconclusive: 0.10}
       other: {cracked_disconnected: 0.10, looks_ok: 0.60, inconclusive: 0.30}
 
@@ -98,7 +119,15 @@ tests:
     outcomes: [no_prime_no_start, primes_normally, weak_prime]
     evaluator: sensory.direct
     likelihoods:
+      vacuum_leak_post_maf: {no_prime_no_start: 0.05, primes_normally: 0.80, weak_prime: 0.15}
+      maf_contaminated: {no_prime_no_start: 0.05, primes_normally: 0.80, weak_prime: 0.15}
+      maf_circuit_open: {no_prime_no_start: 0.05, primes_normally: 0.80, weak_prime: 0.15}
+      iat_circuit_open: {no_prime_no_start: 0.05, primes_normally: 0.80, weak_prime: 0.15}
       fuel_delivery_low: {no_prime_no_start: 0.85, primes_normally: 0.10, weak_prime: 0.05}
+      thermostat_stuck_open: {no_prime_no_start: 0.05, primes_normally: 0.80, weak_prime: 0.15}
+      ignition_misfire_cyl: {no_prime_no_start: 0.05, primes_normally: 0.80, weak_prime: 0.15}
+      charging_low: {no_prime_no_start: 0.05, primes_normally: 0.75, weak_prime: 0.20}
+      o2_slow_b1s1: {no_prime_no_start: 0.05, primes_normally: 0.75, weak_prime: 0.20}
       healthy: {no_prime_no_start: 0.02, primes_normally: 0.90, weak_prime: 0.08}
       other: {no_prime_no_start: 0.10, primes_normally: 0.70, weak_prime: 0.20}
 
@@ -113,9 +142,63 @@ tests:
     outcomes: [plateau_low, plateau_normal, inconclusive]
     evaluator: physics.ect_plateau
     likelihoods:
+      vacuum_leak_post_maf: {plateau_low: 0.05, plateau_normal: 0.85, inconclusive: 0.10}
+      maf_contaminated: {plateau_low: 0.05, plateau_normal: 0.85, inconclusive: 0.10}
+      maf_circuit_open: {plateau_low: 0.05, plateau_normal: 0.85, inconclusive: 0.10}
+      iat_circuit_open: {plateau_low: 0.05, plateau_normal: 0.85, inconclusive: 0.10}
+      fuel_delivery_low: {plateau_low: 0.05, plateau_normal: 0.85, inconclusive: 0.10}
       thermostat_stuck_open: {plateau_low: 0.85, plateau_normal: 0.10, inconclusive: 0.05}
+      ignition_misfire_cyl: {plateau_low: 0.05, plateau_normal: 0.85, inconclusive: 0.10}
+      charging_low: {plateau_low: 0.05, plateau_normal: 0.85, inconclusive: 0.10}
+      o2_slow_b1s1: {plateau_low: 0.05, plateau_normal: 0.85, inconclusive: 0.10}
       healthy: {plateau_low: 0.02, plateau_normal: 0.88, inconclusive: 0.10}
       other: {plateau_low: 0.10, plateau_normal: 0.60, inconclusive: 0.30}
+
+  mode06_misfire_counts:
+    instructions_by_level: {L1: "This is a deeper check for a confident DIYer. The app reads the car's own misfire counters for each cylinder. A counter that keeps climbing points to the misfiring cylinder.", L2: "Read the on-board misfire counts per cylinder. Any cylinder at or above the threshold over the window counts as a misfiring cylinder.", L3: "Per-cylinder misfire counts vs threshold window."}
+    kind: obd_read
+    min_level: L2
+    tools: []
+    minutes: 2
+    risk: 0
+    safety_gate: engine_running_outdoors
+    outcomes: [misfire_cyl_n, no_misfire, inconclusive]
+    evaluator: mode06.misfire
+    likelihoods:
+      vacuum_leak_post_maf: {misfire_cyl_n: 0.05, no_misfire: 0.85, inconclusive: 0.10}
+      maf_contaminated: {misfire_cyl_n: 0.05, no_misfire: 0.85, inconclusive: 0.10}
+      maf_circuit_open: {misfire_cyl_n: 0.05, no_misfire: 0.85, inconclusive: 0.10}
+      iat_circuit_open: {misfire_cyl_n: 0.05, no_misfire: 0.85, inconclusive: 0.10}
+      fuel_delivery_low: {misfire_cyl_n: 0.05, no_misfire: 0.85, inconclusive: 0.10}
+      thermostat_stuck_open: {misfire_cyl_n: 0.05, no_misfire: 0.85, inconclusive: 0.10}
+      ignition_misfire_cyl: {misfire_cyl_n: 0.90, no_misfire: 0.05, inconclusive: 0.05}
+      charging_low: {misfire_cyl_n: 0.05, no_misfire: 0.85, inconclusive: 0.10}
+      o2_slow_b1s1: {misfire_cyl_n: 0.05, no_misfire: 0.85, inconclusive: 0.10}
+      healthy: {misfire_cyl_n: 0.02, no_misfire: 0.90, inconclusive: 0.08}
+      other: {misfire_cyl_n: 0.10, no_misfire: 0.70, inconclusive: 0.20}
+
+  battery_voltage_rest_running:
+    instructions_by_level: {L1: "You need a multimeter for this one. With the engine OFF, touch the red lead to the battery plus terminal and the black lead to minus, and read the volts. Then start the engine and read again. The app shows the healthy ranges.", L2: "Multimeter across the battery terminals: rest voltage with the engine off, then running voltage. Rest below 12.4 or running outside 13.5 to 14.8 means a charging fault.", L3: "Meter: rest volts engine off plus running volts. Judge against physics.voltage bands."}
+    kind: measurement
+    min_level: L2
+    tools: [multimeter]
+    minutes: 5
+    risk: 0
+    safety_gate: none
+    outcomes: [low_rest, low_running, normal, overcharging]
+    evaluator: physics.voltage
+    likelihoods:
+      vacuum_leak_post_maf: {low_rest: 0.05, low_running: 0.05, normal: 0.85, overcharging: 0.05}
+      maf_contaminated: {low_rest: 0.05, low_running: 0.05, normal: 0.85, overcharging: 0.05}
+      maf_circuit_open: {low_rest: 0.05, low_running: 0.05, normal: 0.85, overcharging: 0.05}
+      iat_circuit_open: {low_rest: 0.05, low_running: 0.05, normal: 0.85, overcharging: 0.05}
+      fuel_delivery_low: {low_rest: 0.05, low_running: 0.05, normal: 0.85, overcharging: 0.05}
+      thermostat_stuck_open: {low_rest: 0.05, low_running: 0.05, normal: 0.85, overcharging: 0.05}
+      ignition_misfire_cyl: {low_rest: 0.05, low_running: 0.05, normal: 0.85, overcharging: 0.05}
+      charging_low: {low_rest: 0.25, low_running: 0.55, normal: 0.15, overcharging: 0.05}
+      o2_slow_b1s1: {low_rest: 0.05, low_running: 0.05, normal: 0.85, overcharging: 0.05}
+      healthy: {low_rest: 0.03, low_running: 0.03, normal: 0.90, overcharging: 0.04}
+      other: {low_rest: 0.15, low_running: 0.15, normal: 0.60, overcharging: 0.10}
 
   engine_sound_screen:
     instructions_by_level: {L1: "Park outside with the brake on. Record a short sound clip of the running engine as the app shows. The app measures the sound pattern: a whistle that fades when revved hints at an air leak, a repeating stumble hints at a misfire.", L2: "Outdoors, brake set: record 5 to 8 seconds of engine sound at idle through the app, plus live engine speed and cylinder count. The sound check screens for misfire stumble, belt whistle and air-leak hiss.", L3: "44.1 kHz idle clip plus 2500 clip if hiss suspected, with live speed and cylinder count. Screened by dsp.engine_sound."}
@@ -130,7 +213,13 @@ tests:
     likelihoods:
       vacuum_leak_post_maf: {misfire_dropout: 0.05, belt_bearing_tone: 0.05, vacuum_hiss: 0.65, normal: 0.20, inconclusive: 0.05}
       maf_contaminated: {misfire_dropout: 0.05, belt_bearing_tone: 0.05, vacuum_hiss: 0.10, normal: 0.70, inconclusive: 0.10}
+      maf_circuit_open: {misfire_dropout: 0.05, belt_bearing_tone: 0.05, vacuum_hiss: 0.10, normal: 0.70, inconclusive: 0.10}
+      iat_circuit_open: {misfire_dropout: 0.05, belt_bearing_tone: 0.05, vacuum_hiss: 0.05, normal: 0.75, inconclusive: 0.10}
+      fuel_delivery_low: {misfire_dropout: 0.15, belt_bearing_tone: 0.05, vacuum_hiss: 0.05, normal: 0.60, inconclusive: 0.15}
+      thermostat_stuck_open: {misfire_dropout: 0.03, belt_bearing_tone: 0.05, vacuum_hiss: 0.02, normal: 0.75, inconclusive: 0.15}
       ignition_misfire_cyl: {misfire_dropout: 0.75, belt_bearing_tone: 0.03, vacuum_hiss: 0.02, normal: 0.10, inconclusive: 0.10}
+      charging_low: {misfire_dropout: 0.05, belt_bearing_tone: 0.40, vacuum_hiss: 0.05, normal: 0.40, inconclusive: 0.10}
+      o2_slow_b1s1: {misfire_dropout: 0.08, belt_bearing_tone: 0.05, vacuum_hiss: 0.07, normal: 0.70, inconclusive: 0.10}
       healthy: {misfire_dropout: 0.03, belt_bearing_tone: 0.05, vacuum_hiss: 0.07, normal: 0.75, inconclusive: 0.10}
       other: {misfire_dropout: 0.15, belt_bearing_tone: 0.15, vacuum_hiss: 0.15, normal: 0.40, inconclusive: 0.15}
 

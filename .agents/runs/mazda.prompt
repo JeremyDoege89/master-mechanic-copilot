@@ -1,0 +1,14 @@
+The owner's real test vehicle is a Mazda 3 (gasoline, I4), not a Ford. Today the backend always loads
+ford_gen_v1.yaml (sessions.py get_pack). Change it so the pack is chosen per session from the vehicle: ford_gen_v1 for
+make Ford, generic_gas_v1 for everything else and when the make is unknown; record the pack id in session_started
+(kp_version is already in the report). Make sure generic_gas_v1 is complete enough to run a real session: same
+hypotheses and tests the planner needs (trims idle vs 2500, MAF plausibility, Mode 06 misfire, ECT warm-up, battery
+voltage, engine sound, DTC read, fuel pump prime, visual intake boot), with likelihoods no less conservative than the
+Ford pack and L1/L2/L3 texts; physics defaults that assume a displacement must take it from the vehicle (vPIC
+DisplacementL) and skip with a reason when unknown. The demo bundles stay on the Ford pack (they are simulated Fords) and
+must stay byte-identical (--check). Replace "Ford" with neutral wording ("your car", the decoded make/model) wherever
+the product talks about a real session (Android UI, report, JUDGES.md owner section, export labels); simulated demos
+keep "simulated Ford". Tests: Mazda VIN-decoded session loads generic_gas_v1 and converges on the vacuum-leak scenario
+fixtures; Ford still loads ford_gen_v1; unknown make -> generic. Run backend suite, ci_parity.sh, make_demo_bundle.py
+--check, replay_check, Android build (offline, seeded GRADLE_USER_HOME), web build, acceptance_sweep.sh. Do not commit.
+Foreground only. Never print secret values.

@@ -185,20 +185,25 @@ def run_planner_loop(
     user_level: str,
     user_tools: list[str],
     max_steps: int = 6,
+    vehicle: dict | None = None,
 ) -> tuple[dict[str, float], list[tuple[str, str]]]:
     """Planner-driven diagnosis loop for one scenario.
 
     Each step performs the planner's top-ranked runnable test and takes the
     outcome from the scenario fixture. Returns (posteriors, [(test, outcome)]).
+    ``vehicle`` supplies the displacement the MAF check needs; it defaults
+    to a 2.0 L gasoline vehicle so historic loops keep the MAF test runnable.
     """
     from mmc.engine import bayes, planner
 
+    if vehicle is None:
+        vehicle = {"make": "Ford", "model": "Focus", "year": 2012, "engine": "2.0L I4"}
     posteriors = {h: spec["prior"] for h, spec in pack.hypotheses.items()}
     performed: set[str] = set()
     sequence: list[tuple[str, str]] = []
     for _ in range(max_steps):
         ranked, _ = planner.rank_tests(
-            pack, posteriors, user_level, list(user_tools), ALL_GATES, performed
+            pack, posteriors, user_level, list(user_tools), ALL_GATES, performed, vehicle
         )
         assert ranked, f"planner has no runnable test for {scenario}/{user_level}"
         top = ranked[0]["kp_test_ref"]
