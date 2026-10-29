@@ -1,4 +1,4 @@
-You are reviewing, not building. Do not create or edit any file.
+You are reviewing, not building. Do not edit any file in the repo; scratch probe scripts under /tmp are fine.
 
 Review the M5 (vision), M5U (upload mode) and M5O (Spark Open via Baseten, second opinion, fallback, engine-sound DSP)
 work: `git diff b9b1a9a -- backend packages android scripts` plus any uncommitted changes (`git status`). Check against AGENTS.md hard constraints and docs/SPEC.md §5 and §7:

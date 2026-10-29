@@ -1,0 +1,28 @@
+Read AGENTS.md, docs/SPEC.md (§3 key screens, §5, §7), docs/PLAN.md, docs/DECISIONS.md, the web app (web/src), the
+report templates, backend replay/runner.py and the .mmrec format, and the simulator/scenario fixtures
+(backend/tests/fixtures/sim_scenarios.py, Elm327Sim). The public judge site is live on Modal in replay-only mode. Two
+problems seen on it today:
+(a) The judge demo bundle (sim-healthy.mmrec) has ONE event, so judges see priors and a next-test list, not an
+    investigation.
+(b) The web UI is unstyled browser-default HTML. Demo quality is a large part of judging.
+
+Write .agents/plans/M6B.md (under 140 lines):
+1. A deterministic demo-bundle generator (scripts/make_demo_bundle.py) that drives the real backend end to end on the
+   simulator's vacuum_leak scenario (and a second bundle for coil_unplugged): session start with tools + level,
+   adapter fingerprint, DTC/PID evidence, planner-recommended tests performed in order with safety acks, posteriors
+   converging (true hypothesis #1, p >= 0.8, <= 4 tests), one keyframe with Spark components + SAM overlay + second
+   opinion, one manual-PDF SpecRange that decides an outcome, one engine-sound evidence (synthetic WAV), the report
+   with a Wonder review. Every model output comes from the response cache recorded from REAL live calls (the existing
+   live fixtures, plus a one-time owner-run script `scripts/record_demo_cache.py` that makes the few extra live calls
+   needed and stores them), so replay is $0 and byte-identical. Label the bundles "simulated vehicle, real AI outputs".
+   The real Ford bundles replace them by file drop later.
+2. Web UI design pass: a coherent visual system (CSS variables, light + dark, a mechanic-friendly layout: top status
+   bar with vehicle, adapter, level and budget; left timeline scrubber of events; center hypothesis chart with
+   probability bands and the explanation trace on hover/click; right next-test card with safety checklist; evidence
+   drawer with photo + SAM overlay and AI/DSP/manual badges), responsive down to phone width, no new heavy deps
+   (plain CSS or one small, justified lib). The judge landing explains in two sentences what they're seeing and has
+   one "Play the investigation" button that auto-plays the replay at 2x. The report page prints cleanly.
+3. A first-run "60-second judge path" written into docs/JUDGES.md and mirrored on the landing.
+Tests per item (offline), screenshots via headless Chrome (google-chrome is installed on the host, not in your
+sandbox: write scripts/screenshot_site.sh that I run), expected Meta spend for the cache recording, verification
+commands. Write only the plan file. End with a 5-line summary and ambiguities resolved.

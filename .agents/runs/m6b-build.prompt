@@ -1,0 +1,16 @@
+The plan in .agents/plans/M6B.md is approved with these corrections:
+1. The keyframe overlay must not be empty. vision/sam_stream_air_filter_housing.jsonl is the live "not found" result.
+   Use the Spark components fixture's short sam_concept for a component SAM can find (the live battery stream found 3
+   objects; or have record_demo_cache.py make one live SAM call with Spark's 1-2 word sam_concept on engine_bay_02.jpg
+   through the current downscale path and store it). Assert in test_demo_bundles.py that the keyframe evidence has
+   at least one non-empty mask.
+2. Order of operations: write make_demo_bundle.py and record_demo_cache.py, and make the generator fail with a clear
+   message naming record_demo_cache.py when the demo cache is missing. I run record_demo_cache.py live outside your
+   sandbox, then run make_demo_bundle.py myself and commit the bundles. Tests that need the recorded cache skip with
+   that reason until it exists; everything else must pass now.
+3. A Wonder review of M6 is running in parallel and only reports; don't wait for it. Its fixes come as a separate job.
+4. Keep the full backend suite under 3 minutes; web build must pass with no new npm dependency.
+Implement the plan in order, each step with its test before the next. Run the plan's verification commands except the
+owner-run scripts (backend via .venv/bin/python -m pytest -q; web with npm ci --offline from the local cache), fix
+failures until they pass, add a dated docs/DECISIONS.md entry, and do not commit. Foreground commands only. Finish
+with files created/changed, test counts and pass/fail.

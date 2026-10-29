@@ -1,0 +1,14 @@
+You are reviewing, not building. Do not edit any file in the repo; scratch probe scripts under /tmp are fine.
+
+Review the M6 work (levels, safety gates, clear-codes flow, report + Wonder review, web Replay/Report, budget API, public mode, Modal app)
+work: `git diff 760b65a -- backend packages android web scripts modal_app.py` plus any uncommitted changes (`git status`). Check against AGENTS.md hard constraints and docs/SPEC.md §5 and §7:
+- correctness bugs (wrong math, wrong units, off-by-one, unhandled error paths, races in the async routes);
+- constraint violations: an LLM output that can move a posterior or set a probability, a non-Meta call, a contributor
+  model ID, secrets or request headers reaching fixtures/events/logs, in-place mutation of session history,
+  safety gates that are prompt text instead of code;
+- replay determinism: anything that makes a cached replay differ or spend money;
+- budget guard holes: any paid call path that skips the hard stop or logs a cost of 0;
+- tests that pass without checking the real behaviour.
+Run commands in the foreground only (no background shells or subagents); you may run single test files but
+the full suite is already green. Give the review as your final answer (it is saved for you): findings ranked most severe first, each with file:line, the concrete failure
+scenario, and the fix. Only real findings you verified by reading the code; no style nits. End with a one-line verdict.
